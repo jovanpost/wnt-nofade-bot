@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.streamlit/secrets.toml
+*.pem
+*.key
+wnt_bot.db
+*.log
+.DS_Store
