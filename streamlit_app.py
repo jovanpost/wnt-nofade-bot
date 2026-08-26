@@ -139,33 +139,18 @@ c4.metric("Fills today", STATE["fills_today"])
 c5.metric("Depth snapshots", depth_mod.STATE["snapshots"])
 
 st.caption(
-    f"{C.summary().replace(chr(10), ' · ')} · now {clock.now_ct():%-I:%M:%S %p} CT · "
-    f"last poll {clock.fmt(STATE['last_poll'])}"
+    f"{'DRY RUN' if C.DRY_RUN else ('DEMO' if C.USE_DEMO else 'LIVE')} · "
+    f"now {clock.now_ct():%-I:%M:%S %p} CT · last poll {clock.fmt(STATE['last_poll'])}"
 )
 if STATE["last_error"]:
     st.warning(f"Last error: {STATE['last_error']}")
 
-# ---------------------------------------------------------------------------
-left, right = st.columns([1, 3])
-with left:
-    st.subheader("Controls")
-    if st.button("🛑 Cancel everything now", use_container_width=True):
-        with st.spinner("Cancelling..."):
-            result = runner.cancel_all(reason="dashboard button")
-        st.write(result)
-    if store.is_paused():
-        if st.button("▶️ Resume", use_container_width=True):
-            store.set_state("paused", False)
-            st.rerun()
-    else:
-        if st.button("⏸ Pause new orders", use_container_width=True):
-            store.set_state("paused", True)
-            st.rerun()
-    if st.button("🔄 Refresh", use_container_width=True):
-        st.rerun()
+st.caption("Commands are Telegram-only. This page cannot place, pause, or cancel.")
 
+# ---------------------------------------------------------------------------
+right = st.container()
 with right:
-    stats = analytics.summarise()
+ stats = analytics.summarise()
     st.subheader("Is the backtest holding up?")
     m1, m2, m3 = st.columns(3)
 
