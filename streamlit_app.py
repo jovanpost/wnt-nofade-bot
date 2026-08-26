@@ -151,7 +151,7 @@ st.caption("Commands are Telegram-only. This page cannot place, pause, or cancel
 right = st.container()
 with right:
     stats = analytics.summarise()
- st.subheader("Is the backtest holding up?")
+    st.subheader("Is the backtest holding up?")
     m1, m2, m3 = st.columns(3)
 
     fill_rate = stats["fill_rate"]
