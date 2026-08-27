@@ -21,8 +21,13 @@ def _at(date_str: str, hhmm: str) -> datetime:
 
 
 def cancel_deadline(date_str: str) -> datetime:
-    """The hard 5:29 PM CT moment. Non-negotiable."""
+    """Streamlit / GitHub cancel-and-verify at 5:29 CT."""
     return _at(date_str, C.CANCEL_TIME_CT)
+
+
+def expiry_deadline(date_str: str) -> datetime:
+    """Kalshi kills the order itself at 5:28 CT."""
+    return _at(date_str, C.EXPIRY_TIME_CT)
 
 
 def depth_deadline(date_str: str) -> datetime:
@@ -30,7 +35,7 @@ def depth_deadline(date_str: str) -> datetime:
 
 
 def in_active_window(when: datetime | None = None) -> bool:
-    """True between the morning start and the cancel time -- poll hard here."""
+    """True between the morning start and the cancel time."""
     when = when or now_ct()
     d = when.strftime("%Y-%m-%d")
     return _at(d, C.ACTIVE_WINDOW_START_CT) <= when <= cancel_deadline(d)
@@ -41,17 +46,12 @@ def seconds_until(target: datetime) -> float:
 
 
 def expiry_epoch_seconds(date_str: str) -> int:
-    """Unix seconds for the cancel deadline -- handed to Kalshi as a
-    server-side order expiry so orders die even if this app does."""
-    return int(cancel_deadline(date_str).timestamp())
+    """Unix seconds handed to Kalshi as server-side order expiry."""
+    return int(expiry_deadline(date_str).timestamp())
 
 
 def event_date_from_ticker(event_ticker: str) -> str | None:
-    """'KXWORLDNEWSMENTION-26AUG26' -> '2026-08-26'.
-
-    Returns None if the ticker doesn't parse, which the caller must treat as
-    'not today' rather than guessing.
-    """
+    """'KXWORLDNEWSMENTION-26AUG26' -> '2026-08-26'."""
     try:
         stamp = event_ticker.split("-")[1]
         return datetime.strptime("20" + stamp, "%Y%b%d").strftime("%Y-%m-%d")
@@ -78,7 +78,7 @@ def parse_api_time(raw: str | None) -> datetime | None:
 
 
 __all__ = [
-    "now_ct", "today_ct", "cancel_deadline", "depth_deadline", "in_active_window",
-    "seconds_until", "expiry_epoch_seconds", "event_date_from_ticker", "fmt",
-    "parse_api_time", "timedelta",
+    "now_ct", "today_ct", "cancel_deadline", "expiry_deadline", "depth_deadline",
+    "in_active_window", "seconds_until", "expiry_epoch_seconds",
+    "event_date_from_ticker", "fmt", "parse_api_time", "timedelta",
 ]
