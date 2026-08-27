@@ -25,8 +25,12 @@ STATE: dict = {
 
 
 def book_already_at_or_below_our_price(market: dict) -> bool:
-    yes_bid = _to_cents(market.get("yes_bid"))
-    no_ask = _to_cents(market.get("no_ask"))
+    yes_bid = _to_cents(
+        market.get("yes_bid_dollars") or market.get("yes_bid")
+    )
+    no_ask = _to_cents(
+        market.get("no_ask_dollars") or market.get("no_ask")
+    )
     yes_cap = C.yes_price_cents()
     if yes_bid is not None and yes_bid >= yes_cap:
         return True
