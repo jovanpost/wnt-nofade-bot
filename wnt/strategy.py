@@ -483,10 +483,10 @@ class Runner:
                 STATE.update(active_event=None, active_date=None)
                 self._sleep(C.POLL_SECONDS_COLD)
                 return
-                        self.poll_fills(STATE["active_date"])
-                        wait = 5 if C.DRY_RUN else C.FILL_POLL_SECONDS
-                        self._sleep(min(wait, max(5, clock.seconds_until(deadline))))
-                        return
+            self.poll_fills(STATE["active_date"])
+            wait = 5 if C.DRY_RUN else C.FILL_POLL_SECONDS
+            self._sleep(min(wait, max(5, clock.seconds_until(deadline))))
+            return
 
         found = self.find_todays_event()
         if found:
