@@ -283,7 +283,7 @@ class KalshiClient:
             "ticker": ticker,
             "client_order_id": client_order_id,
             "side": "ask",
-            "count": str(int(count)),
+            "count": f"{float(count):.2f}",
             "price": f"{yes_price / 100:.4f}",
             "time_in_force": "good_till_canceled",
             "self_trade_prevention_type": "taker_at_cross",
