@@ -37,7 +37,7 @@ jobs:
              && [ "${{ inputs.immediate }}" = "true" ]; then
             python -m scripts.cancel_all
           else
-            python -m scripts.cancel_all --wait-until 17:29
+            python -m scripts.cancel_all --wait-until 17:29:45
           fi
       - name: Shout if the cancel failed
         if: failure()
