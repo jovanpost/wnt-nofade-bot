@@ -44,7 +44,7 @@ orders = Table(
     Column("title", String(255)),
     Column("no_price_cents", Integer),
     Column("yes_price_cents", Integer),
-    Column("contracts", Integer),
+    Column("contracts", Float),
     Column("collateral", Float),
     Column("placed_at", DateTime(timezone=True)),
     Column("order_id", String(64)),
