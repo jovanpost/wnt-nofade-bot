@@ -15,10 +15,11 @@ def today_ct() -> str:
 
 
 def _at(date_str: str, hhmm: str) -> datetime:
-    hh, mm = (int(x) for x in hhmm.split(":"))
+    parts = [int(x) for x in hhmm.split(":")]
+    hh, mm = parts[0], parts[1]
+    ss = parts[2] if len(parts) > 2 else 0
     d = datetime.strptime(date_str, "%Y-%m-%d")
-    return datetime(d.year, d.month, d.day, hh, mm, tzinfo=C.CT)
-
+    return datetime(d.year, d.month, d.day, hh, mm, ss, tzinfo=C.CT)
 
 def cancel_deadline(date_str: str) -> datetime:
     """Streamlit / GitHub cancel-and-verify at 5:29 CT."""
