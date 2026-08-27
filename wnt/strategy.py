@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 
 from . import clock, config as C, notify, store
-from .kalshi import KalshiClient, KalshiError, _to_cents, _to_count
+from .kalshi import KalshiClient, KalshiError, _to_cents, _to_count, book_metrics
 
 log = logging.getLogger("wnt.strategy")
 
@@ -189,6 +189,8 @@ class Runner:
             "yes_ask_at_place": _to_cents(market.get("yes_ask")),
             "no_bid_at_place": _to_cents(market.get("no_bid")),
             "no_ask_at_place": _to_cents(market.get("no_ask")),
+            "took_at_open": bool(take_now),
+            "post_only": bool(post_only),
             "expiration_epoch": expiry,
             "status": "resting",
         }
@@ -198,10 +200,10 @@ class Runner:
             row["status"] = "dry_run"
             store.record_order(**row)
             if take_now:
-                log.info("[DRY] would BUY NOW NO %d @ ≤%d on %s",
+                log.info("[DRY] would BUY NOW NO %s @ ≤%d on %s",
                          C.CONTRACTS, C.NO_PRICE_CENTS, title)
                 return "taken", f"{title} (would buy now)"
-            log.info("[DRY] would rest NO %d@%d on %s",
+            log.info("[DRY] would rest NO %s@%d on %s",
                      C.CONTRACTS, C.NO_PRICE_CENTS, title)
             return "placed", title
 
@@ -255,6 +257,7 @@ class Runner:
 
     def poll_fills(self, event_date: str) -> None:
         if C.DRY_RUN:
+            self._poll_dry_fills(event_date)
             return
         try:
             recent = self.client.get_fills(limit=200)
@@ -303,6 +306,56 @@ class Runner:
             notify.send(
                 f"✅ <b>Filled</b>: {notify.esc(order.get('title') or ticker)}\n"
                 f"{count:g} contracts NO @ {price}¢{taker_flag}"
+            )
+
+    def _poll_dry_fills(self, event_date: str) -> None:
+        rows = [
+            r for r in store.orders_for_day(event_date)
+            if r.get("status") in ("dry_run", "resting")
+            and (r.get("filled_contracts") or 0) <= 0
+        ]
+        for row in rows:
+            ticker = row["market_ticker"]
+            try:
+                market = self.client.get_market(ticker)
+                book = self.client.get_orderbook(ticker, depth=10)
+            except Exception as exc:
+                log.debug("dry fill check %s failed: %s", ticker, exc)
+                continue
+
+            if not book_already_at_or_below_our_price(market):
+                continue
+
+            metrics = book_metrics(book, C.NO_PRICE_CENTS)
+            available = metrics.get("yes_size_that_would_fill_us") or 0
+            wanted = float(row.get("contracts") or C.CONTRACTS)
+            filled = wanted if available <= 0 else min(wanted, float(available))
+            if filled <= 0:
+                continue
+
+            store.update_order_by_ticker(
+                event_date, ticker,
+                status="dry_run",
+                filled_contracts=filled,
+                first_fill_at=clock.now_ct(),
+                avg_fill_price_cents=C.NO_PRICE_CENTS,
+            )
+            store.record_fill(
+                fill_id=f"dry-{event_date}-{ticker}",
+                order_id=None,
+                event_date=event_date,
+                market_ticker=ticker,
+                contracts=filled,
+                price_cents=C.NO_PRICE_CENTS,
+                is_taker=bool(row.get("took_at_open")),
+                fee_cents=0,
+                created_at=clock.now_ct(),
+                raw={"dry_run": True, **metrics},
+            )
+            STATE["fills_today"] += 1
+            notify.send(
+                f"🧪 <b>Would have filled</b>: {notify.esc(row.get('title') or ticker)}\n"
+                f"{filled:g} of {wanted:g} contracts NO @ {C.NO_PRICE_CENTS}¢"
             )
 
     def cancel_all(self, event_date: str | None = None, reason: str = "scheduled") -> dict:
