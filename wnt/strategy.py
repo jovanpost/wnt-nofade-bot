@@ -25,12 +25,8 @@ STATE: dict = {
 
 
 def book_already_at_or_below_our_price(market: dict) -> bool:
-    yes_bid = _to_cents(
-        market.get("yes_bid_dollars") or market.get("yes_bid")
-    )
-    no_ask = _to_cents(
-        market.get("no_ask_dollars") or market.get("no_ask")
-    )
+    yes_bid = _to_cents(market.get("yes_bid_dollars") or market.get("yes_bid"))
+    no_ask = _to_cents(market.get("no_ask_dollars") or market.get("no_ask"))
     yes_cap = C.yes_price_cents()
     if yes_bid is not None and yes_bid >= yes_cap:
         return True
@@ -57,7 +53,6 @@ class Runner:
             log.warning("event lookup failed: %s", exc)
             STATE["last_error"] = str(exc)[:200]
             return None
-
         for event in events:
             ticker = event.get("event_ticker", "")
             date_str = clock.event_date_from_ticker(ticker)
@@ -189,10 +184,10 @@ class Runner:
             "placed_at": datetime.now(timezone.utc),
             "dry_run": C.DRY_RUN,
             "mode": self._mode(),
-            "yes_bid_at_place": _to_cents(market.get("yes_bid")),
-            "yes_ask_at_place": _to_cents(market.get("yes_ask")),
-            "no_bid_at_place": _to_cents(market.get("no_bid")),
-            "no_ask_at_place": _to_cents(market.get("no_ask")),
+            "yes_bid_at_place": _to_cents(market.get("yes_bid_dollars") or market.get("yes_bid")),
+            "yes_ask_at_place": _to_cents(market.get("yes_ask_dollars") or market.get("yes_ask")),
+            "no_bid_at_place": _to_cents(market.get("no_bid_dollars") or market.get("no_bid")),
+            "no_ask_at_place": _to_cents(market.get("no_ask_dollars") or market.get("no_ask")),
             "took_at_open": bool(take_now),
             "post_only": bool(post_only),
             "expiration_epoch": expiry,
@@ -366,7 +361,7 @@ class Runner:
         event_date = event_date or clock.today_ct()
         summary = {"attempted": 0, "cancelled": 0, "remaining": 0, "verified": False}
 
-                if C.DRY_RUN:
+        if C.DRY_RUN:
             n = store.mark_all_resting_cancelled(event_date)
             summary.update(attempted=n, cancelled=n, verified=True)
             store.upsert_day(
@@ -431,7 +426,7 @@ class Runner:
             f"{head}\n"
             f"Trigger: {notify.esc(reason)} at {clock.now_ct():%-I:%M:%S %p} CT\n"
             f"Cancelled {summary['cancelled']} of {summary['attempted']} attempted\n\n"
-            f"<b>Today's fill rate: {filled}/{total} ({rate:.0%})</b>\n"
+            f"<b>Today's fill rate: {filled}/{total} ({rate:.0%)}</b>\n"
             f"Backtest expected ~{C.BACKTEST_FILL_RATE:.0%}"
         )
         store.log_activity(
@@ -489,6 +484,11 @@ class Runner:
 
         if STATE["active_event"]:
             if now >= deadline:
+                day = store.get_day(today) or {}
+                if STATE.get("cancelled_today") or day.get("cancelled_at"):
+                    STATE.update(active_event=None, active_date=None)
+                    self._sleep(C.POLL_SECONDS_COLD)
+                    return
                 self.cancel_all(STATE["active_date"], reason="scheduled 5:29 cancel")
                 STATE.update(active_event=None, active_date=None)
                 self._sleep(C.POLL_SECONDS_COLD)
