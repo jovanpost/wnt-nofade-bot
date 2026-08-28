@@ -414,7 +414,8 @@ class Runner:
         rows = store.orders_for_day(event_date)
         total = len([r for r in rows if r.get("status") != "rejected"])
         filled = len([r for r in rows if (r.get("filled_contracts") or 0) > 0])
-        rate = filled / total if total else 0.0
+        rate = (100.0 * filled / total) if total else 0.0
+        back = 100.0 * float(C.BACKTEST_FILL_RATE)
 
         if summary["verified"]:
             head = "🛑 <b>All orders cancelled</b>"
@@ -426,8 +427,8 @@ class Runner:
             f"{head}\n"
             f"Trigger: {notify.esc(reason)} at {clock.now_ct():%-I:%M:%S %p} CT\n"
             f"Cancelled {summary['cancelled']} of {summary['attempted']} attempted\n\n"
-            f"<b>Today's fill rate: {filled}/{total} ({rate:.0%)}</b>\n"
-            f"Backtest expected ~{C.BACKTEST_FILL_RATE:.0%}"
+            f"<b>Today's fill rate: {filled}/{total} ({rate:.0f}%)</b>\n"
+            f"Backtest expected ~{back:.0f}%"
         )
         store.log_activity(
             "cancel_all",
