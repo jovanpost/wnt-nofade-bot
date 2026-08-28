@@ -55,6 +55,8 @@ orders = Table(
     Column("no_bid_at_place", Integer),
     Column("no_ask_at_place", Integer),
     Column("book_at_place", JSON),
+    Column("took_at_open", Boolean, default=False),
+    Column("post_only", Boolean),
     Column("status", String(24), default="resting"),
     Column("reject_reason", Text),
     Column("filled_contracts", Float, default=0.0),
