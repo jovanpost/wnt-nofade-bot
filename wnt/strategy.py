@@ -366,9 +366,15 @@ class Runner:
         event_date = event_date or clock.today_ct()
         summary = {"attempted": 0, "cancelled": 0, "remaining": 0, "verified": False}
 
-        if C.DRY_RUN:
+                if C.DRY_RUN:
             n = store.mark_all_resting_cancelled(event_date)
             summary.update(attempted=n, cancelled=n, verified=True)
+            store.upsert_day(
+                event_date,
+                cancelled_at=datetime.now(timezone.utc),
+                cancel_verified=True,
+            )
+            STATE["cancelled_today"] = True
             self._cancel_report(event_date, summary, reason)
             return summary
 
