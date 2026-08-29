@@ -7,7 +7,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from . import clock, config as C, notify, store
+from . import clock, config as C, notify, settle, store
 from .kalshi import KalshiClient, KalshiError, _to_cents, _to_count, book_metrics
 
 log = logging.getLogger("wnt.strategy")
@@ -21,6 +21,7 @@ STATE: dict = {
     "fills_today": 0,
     "last_error": None,
     "cancelled_today": False,
+    "last_settle": None,
 }
 
 
@@ -467,6 +468,7 @@ class Runner:
         today = clock.today_ct()
         store.heartbeat()
         STATE["last_poll"] = now
+        self._maybe_settle()
 
         if STATE["active_date"] and STATE["active_date"] != today:
             STATE.update(active_event=None, active_date=None, orders_today=0,
@@ -520,6 +522,16 @@ class Runner:
 
         self._sleep(C.POLL_SECONDS_DETECT if clock.in_active_window(now)
                     else C.POLL_SECONDS_COLD)
+
+    def _maybe_settle(self) -> None:
+        last = STATE.get("last_settle")
+        if last is not None and clock.seconds_until(last) > -3600:
+            return
+        try:
+            settle.sweep(self.client)
+        except Exception as exc:
+            log.warning("settle sweep failed: %s", exc)
+        STATE["last_settle"] = clock.now_ct()
 
     def _sleep(self, seconds: float) -> None:
         self._stop.wait(max(1.0, float(seconds)))
