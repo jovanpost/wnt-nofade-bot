@@ -26,14 +26,21 @@ STATE: dict = {
 
 
 def book_already_at_or_below_our_price(market: dict) -> bool:
+    """Ticker snapshot only. 0 is an empty book, not a 0¢ quote."""
     yes_bid = _to_cents(market.get("yes_bid_dollars") or market.get("yes_bid"))
     no_ask = _to_cents(market.get("no_ask_dollars") or market.get("no_ask"))
     yes_cap = C.yes_price_cents()
     if yes_bid is not None and yes_bid >= yes_cap:
         return True
-    if no_ask is not None and no_ask <= C.NO_PRICE_CENTS:
+    if no_ask is not None and 0 < no_ask <= C.NO_PRICE_CENTS:
         return True
     return False
+
+
+def take_size_on_book(book: dict) -> float:
+    """Contracts of YES >= 74¢ (NO <= 26¢) sitting on the orderbook."""
+    metrics = book_metrics(book, C.NO_PRICE_CENTS)
+    return float(metrics.get("yes_size_that_would_fill_us") or 0)
 
 
 def client_order_id(event_date: str, ticker: str) -> str:
@@ -169,7 +176,14 @@ class Runner:
             log.info("already have an order row for %s, skipping", ticker)
             return "exists", f"{title} (already placed)"
 
-        take_now = C.TAKE_IF_ALREADY_CHEAP and book_already_at_or_below_our_price(market)
+        take_now = False
+        if C.TAKE_IF_ALREADY_CHEAP:
+            try:
+                book = self.client.get_orderbook(ticker, depth=10)
+                take_now = take_size_on_book(book) > 0
+            except Exception as exc:
+                log.debug("take-size book %s failed: %s", ticker, exc)
+                take_now = False
         post_only = bool(C.POST_ONLY) and not take_now
 
         row = {
@@ -317,19 +331,17 @@ class Runner:
         for row in rows:
             ticker = row["market_ticker"]
             try:
-                market = self.client.get_market(ticker)
                 book = self.client.get_orderbook(ticker, depth=10)
             except Exception as exc:
                 log.debug("dry fill check %s failed: %s", ticker, exc)
                 continue
 
-            if not book_already_at_or_below_our_price(market):
-                continue
-
             metrics = book_metrics(book, C.NO_PRICE_CENTS)
-            available = metrics.get("yes_size_that_would_fill_us") or 0
+            available = float(metrics.get("yes_size_that_would_fill_us") or 0)
+            if available <= 0:
+                continue
             wanted = float(row.get("contracts") or C.CONTRACTS)
-            filled = wanted if available <= 0 else min(wanted, float(available))
+            filled = min(wanted, available)
             if filled <= 0:
                 continue
 
