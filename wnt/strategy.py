@@ -326,10 +326,14 @@ class Runner:
         rows = [
             r for r in store.orders_for_day(event_date)
             if r.get("status") in ("dry_run", "resting")
-            and (r.get("filled_contracts") or 0) <= 0
         ]
         for row in rows:
             ticker = row["market_ticker"]
+            wanted = float(row.get("contracts") or C.CONTRACTS)
+            already = float(row.get("filled_contracts") or 0)
+            remaining = wanted - already
+            if remaining <= 0:
+                continue
             try:
                 book = self.client.get_orderbook(ticker, depth=10)
             except Exception as exc:
@@ -340,34 +344,43 @@ class Runner:
             available = float(metrics.get("yes_size_that_would_fill_us") or 0)
             if available <= 0:
                 continue
-            wanted = float(row.get("contracts") or C.CONTRACTS)
-            filled = min(wanted, available)
+            filled = min(remaining, available)
             if filled <= 0:
                 continue
+
+            best_yes = metrics.get("best_yes_bid")
+            if best_yes is not None and int(best_yes) >= C.yes_price_cents():
+                fill_px = min(C.NO_PRICE_CENTS, max(1, 100 - int(best_yes)))
+            else:
+                fill_px = C.NO_PRICE_CENTS
+            prev_px = float(row.get("avg_fill_price_cents") or fill_px)
+            total = already + filled
+            avg_px = ((already * prev_px) + (filled * fill_px)) / total
 
             store.update_order_by_ticker(
                 event_date, ticker,
                 status="dry_run",
-                filled_contracts=filled,
-                first_fill_at=clock.now_ct(),
-                avg_fill_price_cents=C.NO_PRICE_CENTS,
+                filled_contracts=total,
+                first_fill_at=row.get("first_fill_at") or clock.now_ct(),
+                avg_fill_price_cents=avg_px,
             )
             store.record_fill(
-                fill_id=f"dry-{event_date}-{ticker}",
+                fill_id=f"dry-{event_date}-{ticker}-{int(time.time() * 1000)}",
                 order_id=None,
                 event_date=event_date,
                 market_ticker=ticker,
                 contracts=filled,
-                price_cents=C.NO_PRICE_CENTS,
-                is_taker=bool(row.get("took_at_open")),
+                price_cents=fill_px,
+                is_taker=bool(row.get("took_at_open")) or already <= 0,
                 fee_cents=0,
                 created_at=clock.now_ct(),
-                raw={"dry_run": True, **metrics},
+                raw={"dry_run": True, "slice": filled, "already": already, **metrics},
             )
-            STATE["fills_today"] += 1
+            if already <= 0:
+                STATE["fills_today"] += 1
             notify.send(
                 f"🧪 <b>Would have filled</b>: {notify.esc(row.get('title') or ticker)}\n"
-                f"{filled:g} of {wanted:g} contracts NO @ {C.NO_PRICE_CENTS}¢"
+                f"{filled:g} more ({total:g} of {wanted:g}) NO @ {fill_px}¢"
             )
 
     def cancel_all(self, event_date: str | None = None, reason: str = "scheduled") -> dict:
