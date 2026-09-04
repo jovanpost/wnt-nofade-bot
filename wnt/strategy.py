@@ -48,6 +48,18 @@ def client_order_id(event_date: str, ticker: str) -> str:
     return f"wnt-{event_date}-{digest}-{C.NO_PRICE_CENTS}-{C.CONTRACTS}"[:64]
 
 
+def smoke_client_order_id(event_date: str, ticker: str) -> str:
+    digest = hashlib.md5(ticker.encode()).hexdigest()[:12]
+    return f"wnt-smoke-{event_date}-{digest}-{C.NO_PRICE_CENTS}-{C.SMOKE_CONTRACTS}"[:64]
+
+
+def _is_smoke_row(row: dict) -> bool:
+    return (
+        row.get("mode") == "smoke"
+        or str(row.get("client_order_id") or "").startswith("wnt-smoke-")
+    )
+
+
 class Runner:
     def __init__(self, client: KalshiClient | None = None):
         self.client = client or KalshiClient()
@@ -101,6 +113,10 @@ class Runner:
         needed = len(markets) * per_market
         if not C.DRY_RUN and not self._balance_ok(needed):
             return
+        if C.SMOKE_LIVE:
+            smoke_needed = len(markets) * C.smoke_collateral_per_market()
+            if not self._balance_ok(smoke_needed):
+                return
 
         expiry = clock.expiry_epoch_seconds(event_date) if C.USE_SERVER_SIDE_EXPIRY else None
         placed = rejected = already = taken = 0
@@ -143,6 +159,8 @@ class Runner:
             return
 
         header = "🧪 DRY RUN — orders simulated" if C.DRY_RUN else "🎯 Orders working"
+        if C.SMOKE_LIVE:
+            header += f" + 🔥 SMOKE {C.SMOKE_CONTRACTS} live contract/name"
         trimmed = f"\n(trimmed from {seen} markets by caps)" if seen > len(markets) else ""
         extra = f", {already} already on the book" if already else ""
         take_bit = (
@@ -213,13 +231,16 @@ class Runner:
             row["order_id"] = None
             row["status"] = "dry_run"
             store.record_order(**row)
+            smoke_note = self._place_smoke(
+                market, event_ticker, event_date, expiry, take_now, post_only,
+            )
             if take_now:
                 log.info("[DRY] would BUY NOW NO %s @ ≤%d on %s",
                          C.CONTRACTS, C.NO_PRICE_CENTS, title)
-                return "taken", f"{title} (would buy now)"
+                return "taken", f"{title} (would buy now){smoke_note}"
             log.info("[DRY] would rest NO %s@%d on %s",
                      C.CONTRACTS, C.NO_PRICE_CENTS, title)
-            return "placed", title
+            return "placed", f"{title}{smoke_note}"
 
         try:
             resp = self.client.create_no_order(
@@ -250,6 +271,69 @@ class Runner:
             return "taken", f"{title} (bought immediately)"
         return "placed", title
 
+    def _place_smoke(self, market: dict, event_ticker: str, event_date: str,
+                     expiry: int | None, take_now: bool, post_only: bool) -> str:
+        """Send the 1-lot live order. Paper row is already stored."""
+        if not C.SMOKE_LIVE:
+            return ""
+        ticker = market["ticker"]
+        title = (market.get("yes_sub_title") or market.get("title") or ticker)[:120]
+        coid = smoke_client_order_id(event_date, ticker)
+        if store.order_exists(coid):
+            return " [smoke already sent]"
+        row = {
+            "client_order_id": coid,
+            "event_date": event_date,
+            "event_ticker": event_ticker,
+            "market_ticker": ticker,
+            "title": title,
+            "no_price_cents": C.NO_PRICE_CENTS,
+            "yes_price_cents": C.yes_price_cents(),
+            "contracts": float(C.SMOKE_CONTRACTS),
+            "collateral": C.smoke_collateral_per_market(),
+            "placed_at": datetime.now(timezone.utc),
+            "dry_run": False,
+            "mode": "smoke",
+            "yes_bid_at_place": _to_cents(market.get("yes_bid_dollars") or market.get("yes_bid")),
+            "yes_ask_at_place": _to_cents(market.get("yes_ask_dollars") or market.get("yes_ask")),
+            "no_bid_at_place": _to_cents(market.get("no_bid_dollars") or market.get("no_bid")),
+            "no_ask_at_place": _to_cents(market.get("no_ask_dollars") or market.get("no_ask")),
+            "took_at_open": bool(take_now),
+            "post_only": bool(post_only),
+            "expiration_epoch": expiry,
+            "status": "resting",
+        }
+        try:
+            resp = self.client.create_no_order(
+                ticker=ticker,
+                no_price_cents=C.NO_PRICE_CENTS,
+                count=int(C.SMOKE_CONTRACTS),
+                client_order_id=coid,
+                post_only=post_only,
+                expiration_epoch=expiry,
+            )
+        except KalshiError as exc:
+            reason = f"{exc.status}: {exc.body[:300]}"
+            row["status"] = "rejected"
+            row["reject_reason"] = reason
+            store.record_order(**row)
+            log.warning("smoke rejected for %s -- %s", ticker, reason)
+            notify.send(
+                f"🔥 Smoke rejected: {notify.esc(title)}\n{notify.esc(reason[:200])}"
+            )
+            return " [smoke REJECTED]"
+        row["order_id"] = resp.get("order_id")
+        filled_now = bool(resp.get("fill_count"))
+        if filled_now:
+            row["status"] = "filled"
+            row["filled_contracts"] = resp["fill_count"]
+            row["first_fill_at"] = datetime.now(timezone.utc)
+            row["avg_fill_price_cents"] = resp.get("avg_fill_price_cents")
+        store.record_order(**row)
+        if filled_now:
+            return " [smoke LIVE TAKEN]"
+        return " [smoke LIVE resting]"
+
     def _balance_ok(self, needed: float) -> bool:
         try:
             balance = self.client.get_balance()
@@ -272,6 +356,7 @@ class Runner:
     def poll_fills(self, event_date: str) -> None:
         if C.DRY_RUN:
             self._poll_dry_fills(event_date)
+        if C.DRY_RUN and not C.SMOKE_LIVE:
             return
         try:
             recent = self.client.get_fills(limit=200)
@@ -279,7 +364,11 @@ class Runner:
             log.warning("fill poll failed: %s", exc)
             return
 
-        known = {o["market_ticker"]: o for o in store.orders_for_day(event_date)}
+        known = {
+            o["market_ticker"]: o
+            for o in store.orders_for_day(event_date)
+            if (not C.DRY_RUN) or _is_smoke_row(o)
+        }
         for fill in recent:
             ticker = fill.get("ticker")
             if ticker not in known:
@@ -305,8 +394,8 @@ class Runner:
 
             order = known[ticker]
             total = (order.get("filled_contracts") or 0) + count
-            store.update_order_by_ticker(
-                event_date, ticker,
+            store.update_order(
+                order["client_order_id"],
                 status="filled",
                 filled_contracts=total,
                 first_fill_at=order.get("first_fill_at")
@@ -317,8 +406,9 @@ class Runner:
             )
             STATE["fills_today"] += 1
             taker_flag = " ⚠️ TAKER FILL" if fill.get("is_taker") else ""
+            tag = "🔥 smoke " if _is_smoke_row(order) else ""
             notify.send(
-                f"✅ <b>Filled</b>: {notify.esc(order.get('title') or ticker)}\n"
+                f"✅ <b>{tag}Filled</b>: {notify.esc(order.get('title') or ticker)}\n"
                 f"{count:g} contracts NO @ {price}¢{taker_flag}"
             )
 
@@ -326,6 +416,7 @@ class Runner:
         rows = [
             r for r in store.orders_for_day(event_date)
             if r.get("status") in ("dry_run", "resting")
+            and not _is_smoke_row(r)
         ]
         for row in rows:
             ticker = row["market_ticker"]
@@ -357,8 +448,8 @@ class Runner:
             total = already + filled
             avg_px = ((already * prev_px) + (filled * fill_px)) / total
 
-            store.update_order_by_ticker(
-                event_date, ticker,
+            store.update_order(
+                row["client_order_id"],
                 status="dry_run",
                 filled_contracts=total,
                 first_fill_at=row.get("first_fill_at") or clock.now_ct(),
@@ -387,7 +478,7 @@ class Runner:
         event_date = event_date or clock.today_ct()
         summary = {"attempted": 0, "cancelled": 0, "remaining": 0, "verified": False}
 
-        if C.DRY_RUN:
+        if C.DRY_RUN and not C.SMOKE_LIVE:
             n = store.mark_all_resting_cancelled(event_date)
             summary.update(attempted=n, cancelled=n, verified=True)
             store.upsert_day(
@@ -398,6 +489,9 @@ class Runner:
             STATE["cancelled_today"] = True
             self._cancel_report(event_date, summary, reason)
             return summary
+
+        if C.DRY_RUN and C.SMOKE_LIVE:
+            store.mark_all_resting_cancelled(event_date)
 
         for attempt in range(3):
             try:
@@ -437,7 +531,7 @@ class Runner:
         return summary
 
     def _cancel_report(self, event_date: str, summary: dict, reason: str) -> None:
-        rows = store.orders_for_day(event_date)
+        rows = [r for r in store.orders_for_day(event_date) if not _is_smoke_row(r)]
         total = len([r for r in rows if r.get("status") != "rejected"])
         filled = len([r for r in rows if (r.get("filled_contracts") or 0) > 0])
         rate = (100.0 * filled / total) if total else 0.0
