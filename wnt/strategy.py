@@ -370,13 +370,26 @@ class Runner:
             if (not C.DRY_RUN) or _is_smoke_row(o)
         }
         for fill in recent:
-            ticker = fill.get("ticker")
+            ticker = fill.get("ticker") or fill.get("market_ticker")
             if ticker not in known:
                 continue
+            count = _to_count(fill.get("count_fp") or fill.get("count"))
+            price = _to_cents(
+                fill.get("no_price_dollars")
+                or fill.get("no_price")
+                or fill.get("price")
+            )
+            if price is None and fill.get("yes_price_dollars") is not None:
+                yes_px = _to_cents(fill.get("yes_price_dollars"))
+                if yes_px is not None:
+                    price = max(1, 100 - yes_px)
+            if price is None:
+                price = C.NO_PRICE_CENTS
+            fee = _to_cents(fill.get("fee_cost") or fill.get("fee_paid")) or 0
+            if count <= 0:
+                count = float(C.SMOKE_CONTRACTS) if C.SMOKE_LIVE else 1.0
             fill_id = (fill.get("trade_id") or fill.get("fill_id")
-                       or f"{ticker}-{fill.get('created_time')}-{fill.get('count')}")
-            count = _to_count(fill.get("count"))
-            price = _to_cents(fill.get("no_price") or fill.get("price"))
+                       or f"{ticker}-{fill.get('created_time')}-{count}")
             is_new = store.record_fill(
                 fill_id=str(fill_id),
                 order_id=fill.get("order_id"),
@@ -385,7 +398,7 @@ class Runner:
                 contracts=count,
                 price_cents=price,
                 is_taker=bool(fill.get("is_taker")),
-                fee_cents=_to_cents(fill.get("fee_paid")) or 0,
+                fee_cents=fee,
                 created_at=clock.parse_api_time(fill.get("created_time")),
                 raw=fill,
             )
@@ -401,8 +414,7 @@ class Runner:
                 first_fill_at=order.get("first_fill_at")
                 or clock.parse_api_time(fill.get("created_time")),
                 avg_fill_price_cents=price,
-                fees_cents=(order.get("fees_cents") or 0)
-                + (_to_cents(fill.get("fee_paid")) or 0),
+                fees_cents=(order.get("fees_cents") or 0) + fee,
             )
             STATE["fills_today"] += 1
             taker_flag = " ⚠️ TAKER FILL" if fill.get("is_taker") else ""
@@ -411,6 +423,65 @@ class Runner:
                 f"✅ <b>{tag}Filled</b>: {notify.esc(order.get('title') or ticker)}\n"
                 f"{count:g} contracts NO @ {price}¢{taker_flag}"
             )
+            if C.DRY_RUN and _is_smoke_row(order):
+                self._credit_paper_from_live(event_date, ticker, count, price)
+
+    def _credit_paper_from_live(self, event_date: str, ticker: str,
+                               live_count: float, price: int) -> None:
+        """A live smoke fill is proof the 26/74 level traded. Credit paper."""
+        paper = None
+        for row in store.orders_for_day(event_date):
+            if row.get("market_ticker") == ticker and not _is_smoke_row(row):
+                paper = row
+                break
+        if not paper:
+            return
+        wanted = float(paper.get("contracts") or C.CONTRACTS)
+        already = float(paper.get("filled_contracts") or 0)
+        remaining = wanted - already
+        if remaining <= 0:
+            return
+        available = 0.0
+        try:
+            book = self.client.get_orderbook(ticker, depth=10)
+            available = float(
+                book_metrics(book, C.NO_PRICE_CENTS).get("yes_size_that_would_fill_us") or 0
+            )
+        except Exception:
+            pass
+        filled = min(remaining, max(float(live_count or 0), available, 1.0))
+        if filled <= 0:
+            return
+        fill_px = int(price or C.NO_PRICE_CENTS)
+        prev_px = float(paper.get("avg_fill_price_cents") or fill_px)
+        total = already + filled
+        avg_px = ((already * prev_px) + (filled * fill_px)) / total
+        store.update_order(
+            paper["client_order_id"],
+            status="dry_run",
+            filled_contracts=total,
+            first_fill_at=paper.get("first_fill_at") or clock.now_ct(),
+            avg_fill_price_cents=avg_px,
+        )
+        store.record_fill(
+            fill_id=f"dry-from-live-{event_date}-{ticker}-{int(time.time() * 1000)}",
+            order_id=None,
+            event_date=event_date,
+            market_ticker=ticker,
+            contracts=filled,
+            price_cents=fill_px,
+            is_taker=False,
+            fee_cents=0,
+            created_at=clock.now_ct(),
+            raw={"dry_run": True, "from_live_smoke": True, "live_count": live_count},
+        )
+        if already <= 0:
+            STATE["fills_today"] += 1
+        notify.send(
+            f"🧪 <b>Would have filled</b>: {notify.esc(paper.get('title') or ticker)}\n"
+            f"{filled:g} more ({total:g} of {wanted:g}) NO @ {fill_px}¢ "
+            f"(live smoke printed)"
+        )
 
     def _poll_dry_fills(self, event_date: str) -> None:
         rows = [
