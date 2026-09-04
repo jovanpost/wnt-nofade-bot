@@ -463,8 +463,9 @@ class Runner:
             first_fill_at=paper.get("first_fill_at") or clock.now_ct(),
             avg_fill_price_cents=avg_px,
         )
+        digest = hashlib.md5(ticker.encode()).hexdigest()[:10]
         store.record_fill(
-            fill_id=f"dry-from-live-{event_date}-{ticker}-{int(time.time() * 1000)}",
+            fill_id=f"dl-{event_date}-{digest}-{int(time.time() * 1000)}"[:64],
             order_id=None,
             event_date=event_date,
             market_ticker=ticker,
