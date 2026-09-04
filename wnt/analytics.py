@@ -18,7 +18,12 @@ def order_pnl(row: dict) -> float | None:
 
 def summarise(rows: list[dict] | None = None) -> dict:
     rows = rows if rows is not None else store.all_orders()
-    live = [r for r in rows if r.get("status") != "rejected"]
+    live = [
+        r for r in rows
+        if r.get("status") != "rejected"
+        and r.get("mode") != "smoke"
+        and not str(r.get("client_order_id") or "").startswith("wnt-smoke-")
+    ]
 
     attempted = len(live)
     filled = [r for r in live if (r.get("filled_contracts") or 0) > 0]
