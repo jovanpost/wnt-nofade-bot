@@ -42,6 +42,8 @@ def _num(key: str, default: float) -> float:
 
 DRY_RUN = _flag("DRY_RUN", True)
 USE_DEMO = _flag("USE_DEMO", False)
+SMOKE_LIVE = _flag("SMOKE_LIVE", False)
+SMOKE_CONTRACTS = max(1, int(_num("SMOKE_CONTRACTS", 1)))
 VERSION = "wnt-nofade-v1"
 
 SERIES = _secret("SERIES", "KXWORLDNEWSMENTION")
@@ -98,14 +100,22 @@ def collateral_per_market() -> float:
     return CONTRACTS * NO_PRICE_CENTS / 100.0
 
 
+def smoke_collateral_per_market() -> float:
+    return SMOKE_CONTRACTS * NO_PRICE_CENTS / 100.0
+
+
 def summary() -> str:
     where = "DEMO (fake money)" if USE_DEMO else "PRODUCTION"
     mode = "DRY RUN (no orders sent)" if DRY_RUN else "LIVE"
+    if SMOKE_LIVE:
+        mode += f" + SMOKE {SMOKE_CONTRACTS} live contract/name"
     return (
         f"{VERSION} | {mode} | {where}\n"
         f"{SERIES}: buy NO @ {NO_PRICE_CENTS}c "
         f"(= ask YES @ {yes_price_cents()}c) x {CONTRACTS} contracts\n"
-        f"${collateral_per_market():.2f}/market, max {MAX_MARKETS_PER_DAY} markets, "
+        f"${collateral_per_market():.2f}/market paper, "
+        f"${smoke_collateral_per_market():.2f}/market smoke, "
+        f"max {MAX_MARKETS_PER_DAY} markets, "
         f"max ${MAX_DAILY_COLLATERAL:.2f} resting\n"
         f"cancel {CANCEL_TIME_CT} CT | post_only={POST_ONLY} | "
         f"take_if_cheap={TAKE_IF_ALREADY_CHEAP} | "
