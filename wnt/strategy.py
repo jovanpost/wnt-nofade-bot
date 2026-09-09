@@ -5,6 +5,7 @@ import hashlib
 import logging
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 
 from . import clock, config as C, notify, settle, store
@@ -44,8 +45,10 @@ def take_size_on_book(book: dict) -> float:
 
 
 def client_order_id(event_date: str, ticker: str) -> str:
-    digest = hashlib.md5(ticker.encode()).hexdigest()[:12]
-    return f"wnt-{event_date}-{digest}-{C.NO_PRICE_CENTS}-{C.CONTRACTS}"[:64]
+    # Kalshi V2: client_order_id must be a UUID. Keep it deterministic
+    # per day/ticker/price/size so retries do not double-rest.
+    seed = f"wnt|{event_date}|{ticker}|{C.NO_PRICE_CENTS}|{C.CONTRACTS}|v2"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
 
 
 def smoke_client_order_id(event_date: str, ticker: str) -> str:
@@ -167,11 +170,18 @@ class Runner:
             f", {taken} bought immediately (book already ≤{C.NO_PRICE_CENTS}¢ NO)"
             if taken else ""
         )
+        first_reject = ""
+        if rejected and not placed:
+            reasons = [r.get("reject_reason") for r in store.orders_for_day(event_date)
+                       if r.get("reject_reason")]
+            if reasons:
+                first_reject = f"First reject: {notify.esc(str(reasons[0])[:180])}\n"
         notify.send(
             f"<b>{header}</b>\n"
             f"{notify.esc(event_ticker)}\n"
             f"{placed} placed{take_bit}, {rejected} rejected{extra} "
             f"of {len(markets)} attempted{trimmed}\n"
+            f"{first_reject}"
             f"NO @ {C.NO_PRICE_CENTS}¢ or cheaper × {C.CONTRACTS} contracts\n"
             f"Collateral resting: ${collateral:.2f}\n"
             f"Cancel at {C.CANCEL_TIME_CT} CT"
@@ -192,6 +202,16 @@ class Runner:
 
         if store.order_exists(coid):
             log.info("already have an order row for %s, skipping", ticker)
+            return "exists", f"{title} (already placed)"
+        for existing in store.orders_for_day(event_date):
+            if existing.get("market_ticker") != ticker:
+                continue
+            if existing.get("status") in ("rejected",):
+                continue
+            if _is_smoke_row(existing):
+                continue
+            log.info("live row already exists for %s (%s), skipping",
+                     ticker, existing.get("status"))
             return "exists", f"{title} (already placed)"
 
         take_now = False
