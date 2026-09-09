@@ -158,9 +158,9 @@ class Runner:
                                f"{event_ticker}: {already} pre-existing orders")
             return
 
-        header = "🧪 DRY RUN — orders simulated" if C.DRY_RUN else "🎯 Orders working"
-        if C.SMOKE_LIVE:
-            header += f" + 🔥 SMOKE {C.SMOKE_CONTRACTS} live contract/name"
+        header = "🧪 DRY RUN — orders simulated" if C.DRY_RUN else "🎯 LIVE $3 — orders working"
+        if C.SMOKE_LIVE and C.DRY_RUN:
+            header += f" + 🔥 SMOKE {C.SMOKE_CONTRACTS}"
         trimmed = f"\n(trimmed from {seen} markets by caps)" if seen > len(markets) else ""
         extra = f", {already} already on the book" if already else ""
         take_bit = (
@@ -195,10 +195,12 @@ class Runner:
             return "exists", f"{title} (already placed)"
 
         take_now = False
+        snap: dict = {}
         if C.TAKE_IF_ALREADY_CHEAP:
             try:
                 book = self.client.get_orderbook(ticker, depth=10)
-                take_now = take_size_on_book(book) > 0
+                snap = book_metrics(book, C.NO_PRICE_CENTS)
+                take_now = float(snap.get("yes_size_that_would_fill_us") or 0) > 0
             except Exception as exc:
                 log.debug("take-size book %s failed: %s", ticker, exc)
                 take_now = False
@@ -225,15 +227,18 @@ class Runner:
             "post_only": bool(post_only),
             "expiration_epoch": expiry,
             "status": "resting",
+            "book_at_place": snap or None,
         }
 
         if C.DRY_RUN:
             row["order_id"] = None
             row["status"] = "dry_run"
             store.record_order(**row)
-            smoke_note = self._place_smoke(
-                market, event_ticker, event_date, expiry, take_now, post_only,
-            )
+            smoke_note = ""
+            if C.SMOKE_LIVE:
+                smoke_note = self._place_smoke(
+                    market, event_ticker, event_date, expiry, take_now, post_only,
+                )
             if take_now:
                 log.info("[DRY] would BUY NOW NO %s @ ≤%d on %s",
                          C.CONTRACTS, C.NO_PRICE_CENTS, title)
@@ -367,7 +372,7 @@ class Runner:
         known = {
             o["market_ticker"]: o
             for o in store.orders_for_day(event_date)
-            if (not C.DRY_RUN) or _is_smoke_row(o)
+            if ((not C.DRY_RUN) and not _is_smoke_row(o)) or _is_smoke_row(o)
         }
         for fill in recent:
             ticker = fill.get("ticker") or fill.get("market_ticker")
@@ -387,11 +392,24 @@ class Runner:
                 price = C.NO_PRICE_CENTS
             fee = _to_cents(fill.get("fee_cost") or fill.get("fee_paid")) or 0
             if count <= 0:
-                count = float(C.SMOKE_CONTRACTS) if C.SMOKE_LIVE else 1.0
+                count = float(C.CONTRACTS)
             fill_id = (fill.get("trade_id") or fill.get("fill_id")
                        or f"{ticker}-{fill.get('created_time')}-{count}")
+            snap: dict = {}
+            try:
+                book = self.client.get_orderbook(ticker, depth=10)
+                snap = book_metrics(book, C.NO_PRICE_CENTS)
+            except Exception:
+                snap = {}
+            raw = dict(fill) if isinstance(fill, dict) else {"fill": fill}
+            raw.update({k: snap.get(k) for k in (
+                "best_yes_bid", "best_no_bid",
+                "no_size_ahead", "no_size_at_our_price",
+                "yes_size_that_would_fill_us",
+                "yes_size_total", "no_size_total",
+            )})
             is_new = store.record_fill(
-                fill_id=str(fill_id),
+                fill_id=str(fill_id)[:64],
                 order_id=fill.get("order_id"),
                 event_date=event_date,
                 market_ticker=ticker,
@@ -400,22 +418,27 @@ class Runner:
                 is_taker=bool(fill.get("is_taker")),
                 fee_cents=fee,
                 created_at=clock.parse_api_time(fill.get("created_time")),
-                raw=fill,
+                raw=raw,
             )
             if not is_new:
                 continue
 
             order = known[ticker]
-            total = (order.get("filled_contracts") or 0) + count
+            already = float(order.get("filled_contracts") or 0)
+            total = already + count
+            prev_px = float(order.get("avg_fill_price_cents") or price)
+            avg_px = ((already * prev_px) + (count * price)) / total if total else price
             store.update_order(
                 order["client_order_id"],
-                status="filled",
+                status="filled" if total >= float(order.get("contracts") or C.CONTRACTS) else "resting",
                 filled_contracts=total,
                 first_fill_at=order.get("first_fill_at")
                 or clock.parse_api_time(fill.get("created_time")),
-                avg_fill_price_cents=price,
+                avg_fill_price_cents=avg_px,
                 fees_cents=(order.get("fees_cents") or 0) + fee,
             )
+            known[ticker]["filled_contracts"] = total
+            known[ticker]["avg_fill_price_cents"] = avg_px
             STATE["fills_today"] += 1
             taker_flag = " ⚠️ TAKER FILL" if fill.get("is_taker") else ""
             tag = "🔥 smoke " if _is_smoke_row(order) else ""
@@ -688,7 +711,7 @@ class Runner:
                 self._sleep(C.POLL_SECONDS_COLD)
                 return
             self.poll_fills(STATE["active_date"])
-            wait = 5 if C.DRY_RUN else C.FILL_POLL_SECONDS
+            wait = 5
             self._sleep(min(wait, max(5, clock.seconds_until(deadline))))
             return
 
