@@ -147,8 +147,41 @@ st.caption("Commands are Telegram-only. This page cannot place, pause, or cancel
 # ---------------------------------------------------------------------------
 right = st.container()
 with right:
+    live_stats = analytics.summarise(live_only=True)
+    st.subheader("Live book only")
+    st.caption("Kalshi cash. Paper / dry_run rows are excluded.")
+    l1, l2, l3, l4 = st.columns(4)
+    live_fill = live_stats["fill_rate"]
+    live_pno = live_stats["p_no_given_filled"]
+    l1.metric(
+        "Fill rate",
+        f"{live_fill:.0%}" if live_fill is not None else "—",
+        delta=f"{live_stats['orders_filled']} / {live_stats['orders_attempted']} names",
+    )
+    l2.metric(
+        "P(NO | filled)",
+        f"{live_pno:.0%}" if live_pno is not None else "—",
+        delta=f"{live_stats['settled_fills']} settled fills",
+    )
+    l3.metric(
+        "Realised P/L",
+        f"${live_stats['total_pnl']:.2f}",
+        delta=f"{live_stats['days_settled']} live day(s)",
+    )
+    l4.metric(
+        "Taker fills",
+        str(live_stats["fills_with_fees"]),
+        help="Crossed the book (fee > 0). Maker rest should stay 0.",
+    )
+    if live_stats["by_day"]:
+        days_txt = " · ".join(
+            f"{d}: ${v:+.2f}" for d, v in live_stats["by_day"].items()
+        )
+        st.caption(days_txt)
+
     stats = analytics.summarise()
     st.subheader("Is the backtest holding up?")
+    st.caption("Paper + live combined. Do not size off this after going live.")
     m1, m2, m3 = st.columns(3)
 
     fill_rate = stats["fill_rate"]
