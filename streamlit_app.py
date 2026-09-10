@@ -128,11 +128,16 @@ if store.is_paused():
     st.warning("Bot is PAUSED. It will not place new orders.")
 
 # ---------------------------------------------------------------------------
+today_rows = analytics.canonical_orders(
+    [r for r in store.orders_for_day(clock.today_ct()) if analytics.is_live_cash(r)]
+)
+today_rested = len(today_rows)
+today_filled = len([r for r in today_rows if (r.get("filled_contracts") or 0) > 0])
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Loop", "running" if STATE["running"] else "stopped")
 c2.metric("Today's event", STATE["active_event"] or "—")
-c3.metric("Orders today", STATE["orders_today"])
-c4.metric("Fills today", STATE["fills_today"])
+c3.metric("Orders today", today_rested or STATE["orders_today"])
+c4.metric("Fills today", today_filled)
 c5.metric("Depth snapshots", depth_mod.STATE["snapshots"])
 
 st.caption(
