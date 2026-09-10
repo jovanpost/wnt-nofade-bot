@@ -54,15 +54,11 @@ def boot():
         )
 
     def cmd_today(_args):
-        rows = store.orders_for_day(clock.today_ct())
-        if not rows:
-            return "No orders recorded today."
-        live = [r for r in rows if r.get("status") != "rejected"]
-        filled = [r for r in live if (r.get("filled_contracts") or 0) > 0]
-        rate = len(filled) / len(live) if live else 0
-        lines = [f"{len(live)} rested, {len(filled)} filled ({rate:.0%})"]
-        lines += [f"• {r['title']}: {r['status']}" for r in rows[:20]]
-        return "\n".join(lines)
+        return analytics.day_pnl_lines(clock.today_ct())
+
+    def cmd_pnl(_args):
+        day = _args[0] if _args else clock.today_ct()
+        return analytics.day_pnl_lines(day)
 
     def cmd_cancelnow(_args):
         result = runner.cancel_all(reason="manual /cancelnow")
@@ -88,7 +84,8 @@ def boot():
         return analytics.format_report(analytics.summarise())
 
     for name, fn in [
-        ("status", cmd_status), ("today", cmd_today), ("cancelnow", cmd_cancelnow),
+        ("status", cmd_status), ("today", cmd_today), ("pnl", cmd_pnl),
+        ("cancelnow", cmd_cancelnow),
         ("pause", cmd_pause), ("resume", cmd_resume), ("balance", cmd_balance),
         ("stats", cmd_stats),
     ]:
