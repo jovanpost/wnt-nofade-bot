@@ -69,8 +69,22 @@ def order_pnl(row: dict) -> float | None:
     return (gross - (row.get("fees_cents") or 0)) / 100.0
 
 
-def summarise(rows: list[dict] | None = None) -> dict:
+def is_live_cash(row: dict) -> bool:
+    """Real Kalshi money. Not paper, not smoke."""
+    if is_smoke(row):
+        return False
+    flag = row.get("dry_run")
+    if flag is True:
+        return False
+    if isinstance(flag, str) and flag.strip().lower() in ("true", "1", "yes"):
+        return False
+    return True
+
+
+def summarise(rows: list[dict] | None = None, live_only: bool = False) -> dict:
     rows = rows if rows is not None else store.all_orders()
+    if live_only:
+        rows = [r for r in rows if is_live_cash(r)]
     live = canonical_orders(rows)
 
     attempted = len(live)
