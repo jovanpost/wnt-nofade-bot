@@ -184,12 +184,16 @@ def upsert_day(event_date: str, **fields: Any) -> None:
 
 
 def day_handled(event_date: str) -> bool:
+    """True only if we actually rested live size or already cancelled."""
     with engine().connect() as conn:
         row = conn.execute(
-            select(days.c.orders_placed, days.c.notes)
+            select(days.c.orders_placed, days.c.cancelled_at)
             .where(days.c.event_date == event_date)
         ).first()
-    return row is not None
+    if row is None:
+        return False
+    placed, cancelled = row[0] or 0, row[1]
+    return placed > 0 or cancelled is not None
 
 
 def get_day(event_date: str) -> dict | None:
