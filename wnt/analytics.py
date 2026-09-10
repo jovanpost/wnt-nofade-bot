@@ -6,6 +6,59 @@ from statistics import mean, stdev
 from . import config as C, store
 
 
+def is_smoke(row: dict) -> bool:
+    return (
+        row.get("mode") == "smoke"
+        or str(row.get("client_order_id") or "").startswith("wnt-smoke-")
+    )
+
+
+def canonical_orders(rows: list[dict]) -> list[dict]:
+    """One row per ticker. Skip rejects/smoke. Keep the lot that filled."""
+    best: dict[str, dict] = {}
+    for row in rows:
+        if row.get("status") == "rejected" or is_smoke(row):
+            continue
+        ticker = row.get("market_ticker") or row.get("title") or ""
+        prev = best.get(ticker)
+        fill = float(row.get("filled_contracts") or 0)
+        prev_fill = float(prev.get("filled_contracts") or 0) if prev else -1.0
+        if prev is None or fill > prev_fill:
+            best[ticker] = row
+    return list(best.values())
+
+
+def day_pnl_lines(event_date: str, rows: list[dict] | None = None) -> str:
+    rows = rows if rows is not None else store.orders_for_day(event_date)
+    live = canonical_orders(rows)
+    filled = [r for r in live if (r.get("filled_contracts") or 0) > 0]
+    pnl_total = 0.0
+    risked = 0.0
+    lines = []
+    for row in filled:
+        pnl = order_pnl(row)
+        price = float(row.get("avg_fill_price_cents") or row.get("no_price_cents") or 0)
+        size = float(row.get("filled_contracts") or 0)
+        fee = float(row.get("fees_cents") or 0)
+        taker = " taker" if fee > 0 else ""
+        result = (row.get("result") or "?").upper()
+        if pnl is not None:
+            pnl_total += pnl
+            risked += size * price / 100.0 + fee / 100.0
+        lines.append(
+            f"• {row.get('title')}: {result} {size:g}@{price:.0f}¢"
+            f"{taker} {'' if pnl is None else f'${pnl:+.2f}'}"
+        )
+    if not filled:
+        return f"{event_date}: no fills"
+    pct = (100.0 * pnl_total / risked) if risked else 0.0
+    head = (
+        f"{event_date}: {pnl_total:+.2f} dollars "
+        f"({pct:+.1f}% on ${risked:.2f} filled, {len(filled)} name(s))"
+    )
+    return "\n".join([head] + lines)
+
+
 def order_pnl(row: dict) -> float | None:
     filled = row.get("filled_contracts") or 0
     result = row.get("result")
@@ -18,12 +71,7 @@ def order_pnl(row: dict) -> float | None:
 
 def summarise(rows: list[dict] | None = None) -> dict:
     rows = rows if rows is not None else store.all_orders()
-    live = [
-        r for r in rows
-        if r.get("status") != "rejected"
-        and r.get("mode") != "smoke"
-        and not str(r.get("client_order_id") or "").startswith("wnt-smoke-")
-    ]
+    live = canonical_orders(rows)
 
     attempted = len(live)
     filled = [r for r in live if (r.get("filled_contracts") or 0) > 0]
