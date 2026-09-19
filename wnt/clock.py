@@ -1,6 +1,7 @@
 """Everything time-related. All decisions are made in US Central Time."""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 from . import config as C
@@ -68,18 +69,48 @@ def fmt(when: datetime | None) -> str:
     return when.astimezone(C.CT).strftime("%-I:%M:%S %p CT")
 
 
+_FRACTION = re.compile(r"\.(\d+)")
+
+
 def parse_api_time(raw: str | None) -> datetime | None:
-    """Kalshi returns RFC3339 with a trailing Z."""
+    """Kalshi returns RFC3339, sometimes with odd fractional seconds
+    (like '...:13.83216+00:00'). Python 3.9 fromisoformat only accepts 3 or 6
+    fraction digits, so pad or trim the fraction to 6 first."""
     if not raw:
         return None
+    text = str(raw).strip()
+    if text[-1:] in ("Z", "z"):
+        text = text[:-1] + "+00:00"
+    text = _FRACTION.sub(lambda m: "." + (m.group(1) + "000000")[:6], text, count=1)
     try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text)
     except Exception:
         return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def event_ticker_for_date(date_str: str) -> str:
+    """'2026-09-18' -> 'KXWORLDNEWSMENTION-26SEP18'."""
+    d = datetime.strptime(date_str, "%Y-%m-%d")
+    return f"{C.SERIES}-{d.strftime('%y%b%d').upper()}"
+
+
+def fmt_precise(when: datetime | None) -> str:
+    """Like fmt() but with milliseconds, for the timing logs."""
+    if when is None:
+        return "never"
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    local = when.astimezone(C.CT)
+    return (local.strftime("%-I:%M:%S") + f".{local.microsecond // 1000:03d}"
+            + local.strftime(" %p CT"))
 
 
 __all__ = [
     "now_ct", "today_ct", "cancel_deadline", "expiry_deadline", "depth_deadline",
     "in_active_window", "seconds_until", "expiry_epoch_seconds",
-    "event_date_from_ticker", "fmt", "parse_api_time", "timedelta",
+    "event_date_from_ticker", "event_ticker_for_date", "fmt", "fmt_precise",
+    "parse_api_time", "timedelta",
 ]

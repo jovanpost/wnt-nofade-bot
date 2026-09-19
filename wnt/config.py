@@ -63,6 +63,21 @@ POLL_SECONDS_HOT = int(_num("POLL_SECONDS_HOT", 30))
 POLL_SECONDS_DETECT = int(_num("POLL_SECONDS_DETECT", 5))
 POLL_SECONDS_COLD = int(_num("POLL_SECONDS_COLD", 300))
 FILL_POLL_SECONDS = int(_num("FILL_POLL_SECONDS", 120))
+
+# --- FAST OPEN (OFF by default) -------------------------------------------
+# When FAST_OPEN is true the bot reads the listing before trading opens,
+# watches the market status in the last seconds, and sends the orders the
+# moment the market turns active. Turn it off and the old path runs as before.
+FAST_OPEN = _flag("FAST_OPEN", False)
+# FAST_OPEN = "shadow" -> watch and report timing only. Places NO orders.
+FAST_SHADOW = str(_secret("FAST_OPEN", "") or "").strip().lower() == "shadow"
+FAST_PREP_SECONDS = _num("FAST_PREP_SECONDS", 30.0)        # start prep this long before open_time
+FAST_LEAD_SECONDS = _num("FAST_LEAD_SECONDS", 3.0)         # start watching this long before open_time
+FAST_WATCH_SECONDS = _num("FAST_WATCH_SECONDS", 0.3)       # gap between status checks near open
+FAST_GIVE_UP_SECONDS = _num("FAST_GIVE_UP_SECONDS", 180.0) # stop watching this long after open_time
+FAST_STRAGGLER_SECONDS = _num("FAST_STRAGGLER_SECONDS", 20.0)
+FAST_MAX_ORDERS_PER_SEC = max(0.5, _num("FAST_MAX_ORDERS_PER_SEC", 8.0))
+FAST_WORKERS = max(1, int(_num("FAST_WORKERS", 4)))
 DEPTH_POLL_SECONDS = int(_num("DEPTH_POLL_SECONDS", 60))
 DEPTH_LEVELS = int(_num("DEPTH_LEVELS", 10))
 
@@ -118,5 +133,6 @@ def summary() -> str:
         f"max ${MAX_DAILY_COLLATERAL:.2f} resting\n"
         f"cancel {CANCEL_TIME_CT} CT | post_only={POST_ONLY} | "
         f"take_if_cheap={TAKE_IF_ALREADY_CHEAP} | "
-        f"server_expiry={USE_SERVER_SIDE_EXPIRY} | order_api={ORDER_API}"
+        f"server_expiry={USE_SERVER_SIDE_EXPIRY} | order_api={ORDER_API} | "
+        f"fast_open={'shadow' if FAST_SHADOW else FAST_OPEN}"
     )
