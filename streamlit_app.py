@@ -128,6 +128,11 @@ if store.is_paused():
     st.warning("Bot is PAUSED. It will not place new orders.")
 
 # ---------------------------------------------------------------------------
+# ONE read of the orders table, reused by every section below (it used to be read 3 times).
+all_rows = store.all_orders()
+live_days = analytics.day_breakdown(all_rows, live_only=True)
+size_rows = analytics.size_breakdown(all_rows, live_only=True)
+
 today_rows = analytics.canonical_orders(
     [r for r in store.orders_for_day(clock.today_ct()) if analytics.is_live_cash(r)]
 )
@@ -142,6 +147,7 @@ c5.metric("Depth snapshots", depth_mod.STATE["snapshots"])
 
 st.caption(
     f"{'DRY RUN' if C.DRY_RUN else ('DEMO' if C.USE_DEMO else 'LIVE')} · "
+    f"size ${C.collateral_per_market():.2f}/name ({C.CONTRACTS:g} contracts) · "
     f"now {clock.now_ct():%-I:%M:%S %p} CT · last poll {clock.fmt(STATE['last_poll'])}"
 )
 if STATE["last_error"]:
@@ -152,7 +158,7 @@ st.caption("Commands are Telegram-only. This page cannot place, pause, or cancel
 # ---------------------------------------------------------------------------
 right = st.container()
 with right:
-    live_stats = analytics.summarise(live_only=True)
+    live_stats = analytics.summarise(all_rows, live_only=True)
     st.subheader("Live book only")
     st.caption("Kalshi cash. Paper / dry_run rows are excluded.")
     l1, l2, l3, l4 = st.columns(4)
@@ -178,13 +184,50 @@ with right:
         str(live_stats["fills_with_fees"]),
         help="Crossed the book (fee > 0). Maker rest should stay 0.",
     )
+    # --- percentages: size-neutral, so $3 days and $5 days can be compared ---
+    p1, p2, p3, p4 = st.columns(4)
+    pf, pr = live_stats["pct_on_filled"], live_stats["pct_on_resting"]
+    p1.metric(
+        "Return on filled money",
+        f"{pf:+.1f}%" if pf is not None else "—",
+        delta=f"${live_stats['total_cost_filled']:.0f} spent on fills",
+        delta_color="off",
+        help="Profit ÷ the money actually spent on filled orders (settled only). "
+             "Of every $100 that went into fills, how many dollars came back as profit.",
+    )
+    p2.metric(
+        "Return on resting money",
+        f"{pr:+.1f}%" if pr is not None else "—",
+        delta=f"${live_stats['resting_settled']:.0f} set aside",
+        delta_color="off",
+        help="Profit ÷ all the cash set aside on every name, filled or not. "
+             "Counts only days where every name has settled.",
+    )
+    best_pct, worst_pct = live_stats["best_day_pct"], live_stats["worst_day_pct"]
+    p3.metric(
+        "Best / worst day",
+        (f"{best_pct:+.1f}% / {worst_pct:+.1f}%"
+         if best_pct is not None and worst_pct is not None else "—"),
+        help="Return on filled money, by day.",
+    )
+    p4.metric(
+        "Size per name now",
+        f"${C.collateral_per_market():.2f}",
+        delta=f"{C.CONTRACTS:g} contracts", delta_color="off",
+        help="Set DOLLARS_PER_MARKET in the Streamlit secrets to change it.",
+    )
     if live_stats["by_day"]:
+        pct_by_day = {d["event_date"]: d["pct_on_filled"] for d in live_days}
         days_txt = " · ".join(
-            f"{d}: ${v:+.2f}" for d, v in live_stats["by_day"].items()
+            f"{d}: ${v:+.2f}"
+            + (f" ({pct_by_day[d]:+.1f}%)" if pct_by_day.get(d) is not None else "")
+            for d, v in live_stats["by_day"].items()
         )
         st.caption(days_txt)
+    if len(all_rows) >= 2000:
+        st.caption("Totals cover only the newest 2,000 order rows.")
 
-    stats = analytics.summarise()
+    stats = analytics.summarise(all_rows)
     st.subheader("Is the backtest holding up?")
     st.caption("Paper + live combined. Do not size off this after going live.")
     m1, m2, m3 = st.columns(3)
@@ -204,7 +247,10 @@ with right:
              "flow is finding you. Freeze size.",
     )
     m3.metric("Realised P/L", f"${stats['total_pnl']:.2f}",
-              delta=f"{stats['days_settled']} settled day(s)")
+              delta=(f"{stats['days_settled']} settled day(s)"
+                     + (f" · {stats['pct_on_filled']:+.1f}% on filled money"
+                        if stats["pct_on_filled"] is not None else "")),
+              delta_color="off")
 
     verdict, why = analytics.scaling_verdict(stats)
     {"SCALE": st.success, "FREEZE": st.error,
@@ -223,15 +269,18 @@ with tab_today:
             "yes_bid_at_place", "yes_ask_at_place", "filled_contracts",
             "avg_fill_price_cents", "fees_cents", "result", "reject_reason",
         ]]
+        df["pnl $"] = [analytics.order_pnl(r) for r in rows]
+        df["pnl %"] = [analytics.order_pnl_pct(r) for r in rows]
         st.dataframe(df, use_container_width=True, hide_index=True)
     else:
         st.write("Nothing today yet.")
 
 with tab_orders:
-    rows = store.all_orders(limit=1000)
+    rows = all_rows[:1000]  # same newest-first rows, no second database read
     if rows:
         df = pd.DataFrame(rows)
         df["pnl"] = df.apply(lambda r: analytics.order_pnl(dict(r)), axis=1)
+        df["pnl_pct"] = df.apply(lambda r: analytics.order_pnl_pct(dict(r)), axis=1)
         st.dataframe(df, use_container_width=True, hide_index=True)
         st.download_button("Download CSV", df.to_csv(index=False),
                            "wnt_orders.csv", "text/csv")
@@ -239,6 +288,54 @@ with tab_orders:
         st.write("No orders recorded yet.")
 
 with tab_days:
+    if live_days:
+        st.subheader("Live days (real money)")
+        st.caption("Percentages ignore size, so a $3 day and a $5 day compare fairly. "
+                   "'% on filled' = profit ÷ money spent on fills. "
+                   "'% on resting' = profit ÷ cash set aside on every name "
+                   "(shown once the whole day has settled).")
+        st.dataframe(pd.DataFrame([{
+            "date": d["event_date"], "size": d["size"], "orders": d["orders"],
+            "filled": d["filled"],
+            "fill %": None if d["fill_rate"] is None else round(100 * d["fill_rate"], 1),
+            "P(NO|filled) %": None if d["p_no"] is None else round(100 * d["p_no"], 1),
+            "P/L $": round(d["pnl"], 2),
+            "% on filled": None if d["pct_on_filled"] is None else round(d["pct_on_filled"], 1),
+            "% on resting": None if d["pct_on_resting"] is None else round(d["pct_on_resting"], 1),
+            "day settled": d["fully_settled"],
+        } for d in reversed(live_days)]), use_container_width=True, hide_index=True)
+
+        day_pct = pd.Series(
+            {d["event_date"]: d["pct_on_filled"] for d in live_days
+             if d["pct_on_filled"] is not None}, name="Return on filled money (%)")
+        if len(day_pct):
+            st.caption("Daily return on filled money (%)")
+            st.bar_chart(day_pct)
+        run_pnl = run_cost = 0.0
+        cumulative = {}
+        for d in live_days:
+            run_pnl += d["pnl"]
+            run_cost += d["cost_filled"]
+            if run_cost:
+                cumulative[d["event_date"]] = 100.0 * run_pnl / run_cost
+        if cumulative:
+            st.caption("Running return on filled money (%), all live days so far")
+            st.line_chart(pd.Series(cumulative, name="Running return (%)"))
+
+        st.subheader("By size per name")
+        st.caption("Same numbers split by how much went on each name. Watch P(NO|filled): "
+                   "if it falls as size goes up, bigger orders are attracting worse fills.")
+        st.dataframe(pd.DataFrame([{
+            "size": g["size"], "days": g["days"], "orders": g["orders"], "filled": g["filled"],
+            "fill %": None if g["fill_rate"] is None else round(100 * g["fill_rate"], 1),
+            "settled fills": g["settled_fills"],
+            "P(NO|filled) %": None if g["p_no"] is None else round(100 * g["p_no"], 1),
+            "P/L $": round(g["pnl"], 2),
+            "% on filled": None if g["pct_on_filled"] is None else round(g["pct_on_filled"], 1),
+            "% on resting": None if g["pct_on_resting"] is None else round(g["pct_on_resting"], 1),
+        } for g in size_rows]), use_container_width=True, hide_index=True)
+        st.divider()
+        st.subheader("Paper + live combined (dollars)")
     if stats["by_day"]:
         st.bar_chart(pd.Series(stats["by_day"], name="P/L ($)"))
     days_rows = store.recent_days()

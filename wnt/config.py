@@ -115,21 +115,32 @@ def collateral_per_market() -> float:
     return CONTRACTS * NO_PRICE_CENTS / 100.0
 
 
+def effective_max_markets() -> int:
+    """How many markets the money cap really allows (same math the bot uses)."""
+    per = collateral_per_market()
+    by_money = int(MAX_DAILY_COLLATERAL // per) if per > 0 else MAX_MARKETS_PER_DAY
+    return max(0, min(MAX_MARKETS_PER_DAY, by_money))
+
+
 def smoke_collateral_per_market() -> float:
     return SMOKE_CONTRACTS * NO_PRICE_CENTS / 100.0
 
 
 def summary() -> str:
     where = "DEMO (fake money)" if USE_DEMO else "PRODUCTION"
-    mode = "DRY RUN (no orders sent)" if DRY_RUN else "LIVE $3"
+    live_label = f"LIVE ${DOLLARS_PER_MARKET:g}"
+    mode = "DRY RUN (no orders sent)" if DRY_RUN else live_label
     if SMOKE_LIVE:
-        mode += f" + SMOKE {SMOKE_CONTRACTS} (DO NOT use with live $3)"
+        mode += f" + SMOKE {SMOKE_CONTRACTS} (DO NOT use with live ${DOLLARS_PER_MARKET:g})"
+    money_cap = effective_max_markets()
+    markets_txt = f"max {MAX_MARKETS_PER_DAY} markets" + (
+        f" (money cap allows only {money_cap})" if money_cap < MAX_MARKETS_PER_DAY else "")
     return (
         f"{VERSION} | {mode} | {where}\n"
         f"{SERIES}: buy NO @ {NO_PRICE_CENTS}c "
         f"(= ask YES @ {yes_price_cents()}c) x {CONTRACTS} contracts\n"
         f"${collateral_per_market():.2f}/market, "
-        f"max {MAX_MARKETS_PER_DAY} markets, "
+        f"{markets_txt}, "
         f"max ${MAX_DAILY_COLLATERAL:.2f} resting\n"
         f"cancel {CANCEL_TIME_CT} CT | post_only={POST_ONLY} | "
         f"take_if_cheap={TAKE_IF_ALREADY_CHEAP} | "

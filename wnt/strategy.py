@@ -256,7 +256,7 @@ class Runner:
                                f"{event_ticker}: {already} pre-existing orders")
             return
 
-        header = "🧪 DRY RUN — orders simulated" if C.DRY_RUN else "🎯 LIVE $3 — orders working"
+        header = "🧪 DRY RUN — orders simulated" if C.DRY_RUN else f"🎯 LIVE ${C.DOLLARS_PER_MARKET:g} — orders working"
         if C.SMOKE_LIVE and C.DRY_RUN:
             header += f" + 🔥 SMOKE {C.SMOKE_CONTRACTS}"
         trimmed = f"\n(trimmed from {seen} markets by caps)" if seen > len(markets) else ""
@@ -1374,7 +1374,7 @@ class Runner:
                              first_send=first_send, last_send=last_send,
                              events_lag=summary["events_lag"])
         notify.send(
-            f"<b>🎯 LIVE $3 — orders working ⚡fast</b>\n"
+            f"<b>🎯 LIVE ${C.DOLLARS_PER_MARKET:g} — orders working ⚡fast</b>\n"
             f"{notify.esc(event_ticker)}\n"
             f"{placed} placed{take_bit}, {counts['rejected']} rejected{extra} "
             f"of {summary['seen']} attempted{left_bit}\n"
