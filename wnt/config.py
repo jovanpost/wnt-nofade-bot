@@ -64,6 +64,13 @@ POLL_SECONDS_DETECT = int(_num("POLL_SECONDS_DETECT", 5))
 POLL_SECONDS_COLD = int(_num("POLL_SECONDS_COLD", 300))
 FILL_POLL_SECONDS = int(_num("FILL_POLL_SECONDS", 120))
 
+# --- LATE MARKETS (ON by default; set LATE_SWEEP = "false" to switch off) ---------------
+# Kalshi sometimes adds or opens a market hours after the rest of the day's event
+# (Sep 21: Trump and Iran appeared around 3 PM). The sweep looks again every
+# LATE_SWEEP_SECONDS and rests the SAME order on any open market with no order row.
+LATE_SWEEP = _flag("LATE_SWEEP", True)
+LATE_SWEEP_SECONDS = max(3.0, _num("LATE_SWEEP_SECONDS", 10.0))
+
 # --- FAST OPEN (OFF by default) -------------------------------------------
 # When FAST_OPEN is true the bot reads the listing before trading opens,
 # watches the market status in the last seconds, and sends the orders the
@@ -145,5 +152,5 @@ def summary() -> str:
         f"cancel {CANCEL_TIME_CT} CT | post_only={POST_ONLY} | "
         f"take_if_cheap={TAKE_IF_ALREADY_CHEAP} | "
         f"server_expiry={USE_SERVER_SIDE_EXPIRY} | order_api={ORDER_API} | "
-        f"fast_open={'shadow' if FAST_SHADOW else FAST_OPEN}"
+        f"fast_open={'shadow' if FAST_SHADOW else FAST_OPEN} | late_sweep={LATE_SWEEP}"
     )

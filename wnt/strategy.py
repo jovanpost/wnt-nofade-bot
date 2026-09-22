@@ -137,6 +137,10 @@ class Runner:
         self._fast_off_date: str | None = None
         self._fast_arm_tries = 0
         self._shadow_threaded = True  # tests set False to run it inline
+        # late-market sweep bookkeeping
+        self._sweep: dict | None = None
+        self._sweep_last_at: datetime | None = None
+        self._sweep_err_at: datetime | None = None
         self._pace_lock = threading.Lock()
         self._pace_next = 0.0
 
@@ -829,6 +833,11 @@ class Runner:
                 self._sleep(C.POLL_SECONDS_COLD)
                 return
             self.poll_fills(STATE["active_date"])
+            if C.LATE_SWEEP:
+                try:
+                    self._late_sweep(STATE["active_event"], STATE["active_date"], now)
+                except Exception as exc:  # noqa: BLE001
+                    self._sweep_failed(exc)
             wait = 5
             self._sleep(min(wait, max(5, clock.seconds_until(deadline))))
             return
@@ -861,6 +870,106 @@ class Runner:
 
         self._sleep(C.POLL_SECONDS_DETECT if clock.in_active_window(now)
                     else C.POLL_SECONDS_COLD)
+
+    # ==================================================================
+    # LATE MARKETS
+    # place_all looks at the event ONCE. If Kalshi adds or opens a market later
+    # (Sep 21: Trump and Iran appeared around 3 PM) it was never ordered. This
+    # sweep looks again every LATE_SWEEP_SECONDS and rests the SAME order on any
+    # open market that has no order row yet. It reuses _place_one, so the order,
+    # the take-if-cheap rule and the "never double an order" guards are identical.
+    # Database reads: one when it starts, then only when a new market shows up.
+    # ==================================================================
+    def _sweep_failed(self, exc: Exception) -> None:
+        log.warning("late-market sweep failed: %s", exc)
+        stamp = self._utcnow()
+        if (self._sweep_err_at is None
+                or (stamp - self._sweep_err_at).total_seconds() >= 1800):
+            self._sweep_err_at = stamp
+            store.log_activity("late_sweep_error", str(exc)[:500], level="error")
+            notify.send("⚠️ The late-market check hit an error (the day's orders are "
+                        f"untouched): {notify.esc(str(exc)[:160])}")
+
+    def _sweep_note(self, sw: dict, markets: list[dict], reason: str) -> None:
+        """Tell Jovan ONCE per market that a late market was seen but not ordered."""
+        fresh = [m for m in markets if m["ticker"] not in sw["alerted"]]
+        if not fresh:
+            return
+        for m in fresh:
+            sw["alerted"].add(m["ticker"])
+        names = ", ".join(notify.esc((m.get("yes_sub_title") or m.get("title") or m["ticker"])[:60])
+                          for m in fresh[:6])
+        notify.send(f"🕒 Late market(s) appeared but were NOT ordered: {names}\n"
+                    f"Reason: {reason}.")
+
+    def _late_sweep(self, event_ticker: str, event_date: str, now: datetime) -> None:
+        if C.SMOKE_LIVE or STATE.get("cancelled_today"):
+            return
+        if now >= clock.cancel_deadline(event_date) - timedelta(seconds=90):
+            return  # too close to the cancel to be worth resting anything
+        stamp = self._utcnow()
+        if (self._sweep_last_at is not None
+                and (stamp - self._sweep_last_at).total_seconds() < C.LATE_SWEEP_SECONDS):
+            return
+        self._sweep_last_at = stamp
+
+        sw = self._sweep
+        if sw is None or sw["date"] != event_date:
+            seen = {r.get("market_ticker") for r in store.orders_for_day(event_date)
+                    if not _is_smoke_row(r)}
+            sw = {"date": event_date, "seen": seen, "alerted": set()}
+            self._sweep = sw
+        if not sw["seen"]:
+            return  # the day never got its first orders (paused, no cash...): do not start late
+
+        markets = self.client.get_markets(event_ticker)  # one public read, no database
+        new = [m for m in markets
+               if _is_open_status(m) and m.get("ticker") and m["ticker"] not in sw["seen"]]
+        if not new:
+            return
+
+        if store.is_paused():
+            self._sweep_note(sw, new, "the bot is PAUSED (it will order them after /resume)")
+            return
+        per_market = C.collateral_per_market()
+        cap = max(0, min(C.MAX_MARKETS_PER_DAY, int(C.MAX_DAILY_COLLATERAL // per_market)))
+        room = cap - len(sw["seen"])
+        if room <= 0:
+            self._sweep_note(sw, new, f"the daily limit of {cap} markets is already used")
+            return
+        batch = new[:room]
+        if not C.DRY_RUN and not self._balance_ok(len(batch) * per_market, tell=False):
+            self._sweep_note(sw, batch, f"not enough cash for ${len(batch) * per_market:.2f} more")
+            return
+
+        expiry = clock.expiry_epoch_seconds(event_date) if C.USE_SERVER_SIDE_EXPIRY else None
+        lines = []
+        for market in batch:
+            outcome, label = self._place_one(market, event_ticker, event_date, expiry)
+            sw["seen"].add(market["ticker"])   # whatever happened, never try this market again
+            sent = self._utcnow()
+            opened = clock.parse_api_time(market.get("open_time"))
+            lines.append(f"• {notify.esc(label)} [{outcome}] order sent "
+                         f"{clock.fmt_precise(sent)}" + _after(sent, opened)
+                         + (" after open_time" if opened else ""))
+            store.log_activity(
+                "late_market",
+                f"{market['ticker']}: {outcome}; open_time "
+                f"{opened.isoformat() if opened else 'unknown'}; ordered {sent.isoformat()}")
+            time.sleep(0.15)
+
+        rows = store.orders_for_day(event_date)
+        total_live = len([r for r in rows if r.get("status") != "rejected"])
+        total_rejected = len([r for r in rows if r.get("status") == "rejected"])
+        store.upsert_day(event_date, markets_seen=len(sw["seen"]), orders_placed=total_live,
+                         orders_rejected=total_rejected, collateral=total_live * per_market)
+        STATE["orders_today"] = total_live
+        notify.send(
+            f"🕒 <b>Late market found — ordered right away</b>\n"
+            f"{notify.esc(event_ticker)}\n" + "\n".join(lines) + "\n"
+            f"Same order as the rest: NO @ {C.NO_PRICE_CENTS}¢ or cheaper × {C.CONTRACTS:g} "
+            f"contracts (${per_market:.2f}). Orders today: {total_live}."
+        )
 
     # ==================================================================
     # FAST OPEN
