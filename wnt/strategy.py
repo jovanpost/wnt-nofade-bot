@@ -496,9 +496,17 @@ class Runner:
             for o in store.orders_for_day(event_date)
             if ((not C.DRY_RUN) and not _is_smoke_row(o)) or _is_smoke_row(o)
         }
+        # The same Kalshi account now also runs gap-bot Book L and nolive live on
+        # these same words. If our row has a Kalshi order_id and the fill carries a
+        # DIFFERENT order_id, the fill belongs to another bot: skip it. Anything
+        # without an order_id on either side keeps the old ticker match.
         for fill in recent:
             ticker = fill.get("ticker") or fill.get("market_ticker")
             if ticker not in known:
+                continue
+            ours = known[ticker].get("order_id")
+            fill_oid = fill.get("order_id")
+            if ours and fill_oid and str(fill_oid) != str(ours):
                 continue
             count = _to_count(fill.get("count_fp") or fill.get("count"))
             price = _to_cents(
