@@ -23,6 +23,8 @@ import threading
 import pandas as pd
 import streamlit as st
 
+import mdkit
+
 from wnt import analytics, clock, config as C, depth as depth_mod, notify, store
 from wnt.kalshi import KalshiClient
 from wnt.strategy import STATE, Runner
@@ -155,6 +157,14 @@ if STATE["last_error"]:
 
 st.caption("Commands are Telegram-only. This page cannot place, pause, or cancel.")
 
+_NOW_TXT = clock.fmt(clock.now_ct())
+
+
+def _page(title):
+    mdkit.page(title, C.VERSION, _NOW_TXT)
+
+
+_page("Summary")
 # ---------------------------------------------------------------------------
 right = st.container()
 with right:
@@ -257,15 +267,91 @@ with right:
      "HOLD": st.warning, "WAIT": st.info}[verdict](f"**{verdict}** — {why}")
 
 # ---------------------------------------------------------------------------
-tab_today, tab_orders, tab_days, tab_depth, tab_log = st.tabs(
-    ["Today", "All orders", "By day", "Depth", "Activity"]
+tab_ledger, tab_today, tab_orders, tab_days, tab_depth, tab_log = st.tabs(
+    ["Ledger (day / week)", "Today", "All orders", "By day", "Depth", "Activity"]
 )
 
+NAMES = {r["market_ticker"]: r.get("title") for r in all_rows if r.get("title")}
+
+
+def _nm(ticker):
+    return NAMES.get(ticker) or ticker
+
+
+def _said(result):
+    return {"yes": "SAID (YES)", "no": "not said (NO)"}.get(result or "", "waiting for result")
+
+
+with tab_ledger:
+    _page("Ledger")
+    live_rows = analytics.canonical_orders([r for r in all_rows if analytics.is_live_cash(r)])
+    per = mdkit.period_picker([r["event_date"] for r in live_rows], "ledger", clock.today_ct())
+    st.caption(f"Showing: {per['label']}. Live (real money) orders only. All times are Central.")
+    sel = [r for r in live_rows if per["match"](r["event_date"])]
+    all_f = store.all_fills()
+    by_oid: dict = {}
+    for f in all_f:
+        by_oid.setdefault(str(f.get("order_id")), []).append(f)
+    if not sel:
+        st.info("No live orders in this period.")
+    else:
+        rows_l = []
+        net = spent = 0.0
+        wins = settled = 0
+        for r in sorted(sel, key=lambda x: (x["event_date"], str(x.get("placed_at")))):
+            fl = by_oid.get(str(r.get("order_id")), [])
+            filled = float(r.get("filled_contracts") or 0)
+            avg = r.get("avg_fill_price_cents")
+            cost = filled * float(avg or 0) / 100.0
+            pnl = analytics.order_pnl(r)
+            spent += cost
+            if pnl is not None:
+                net += pnl
+                settled += 1
+                wins += 1 if r.get("result") == "no" else 0
+            n_t = sum(1 for f in fl if f.get("is_taker"))
+            rows_l.append({
+                "date": r["event_date"], "word": r.get("title") or r["market_ticker"],
+                "placed": mdkit.ct_time(r.get("placed_at"), C.CT),
+                "order": f"buy NO at {r['no_price_cents']}¢ or less x {float(r.get('contracts') or 0):g}",
+                "filled": round(filled, 2),
+                "first fill": mdkit.ct_time(r.get("first_fill_at"), C.CT),
+                "fills": (f"{len(fl)} ({n_t} taker, {len(fl) - n_t} maker)") if fl else "0",
+                "avg NO price ¢": None if avg is None else round(float(avg), 2),
+                "cost $": round(cost, 2),
+                "fees $": round(float(r.get("fees_cents") or 0) / 100.0, 2),
+                "ended": r.get("status"),
+                "cancelled": mdkit.ct_time(r.get("cancelled_at"), C.CT),
+                "result": _said(r.get("result")) if filled > 0 else "not filled",
+                "paid out $": (round(filled, 2) if r.get("result") == "no" else 0.0) if (r.get("result") and filled > 0) else None,
+                "P&L $": None if pnl is None else round(pnl, 2),
+                "return %": analytics.order_pnl_pct(r),
+            })
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Words ordered", len(rows_l))
+        m2.metric("Filled", sum(1 for x in rows_l if x["filled"] > 0))
+        m3.metric("Won / settled", f"{wins} / {settled}")
+        m4.metric("Money in fills", f"${spent:.2f}")
+        m5.metric("Net P&L (after fees)", f"{net:+.2f}")
+        st.dataframe(pd.DataFrame(rows_l), use_container_width=True, hide_index=True)
+        oids = {str(r.get("order_id")) for r in sel if r.get("order_id")}
+        fl_rows = [{
+            "time": mdkit.ct_time(f.get("created_at"), C.CT), "date": f.get("event_date"),
+            "word": _nm(f.get("market_ticker")), "contracts": round(float(f.get("contracts") or 0), 2),
+            "NO price ¢": f.get("price_cents"),
+            "type": "taker (instant)" if f.get("is_taker") else "maker (rested)",
+            "fee $": round(float(f.get("fee_cents") or 0) / 100.0, 2),
+            "cost $": round(float(f.get("contracts") or 0) * float(f.get("price_cents") or 0) / 100.0, 2),
+        } for f in all_f if str(f.get("order_id")) in oids]
+        st.subheader("Every real fill")
+        st.dataframe(pd.DataFrame(fl_rows), use_container_width=True, hide_index=True)
+
 with tab_today:
+    _page("Today")
     rows = store.orders_for_day(clock.today_ct())
     if rows:
         df = pd.DataFrame(rows)[[
-            "title", "market_ticker", "status", "no_price_cents", "contracts",
+            "title", "status", "no_price_cents", "contracts",
             "yes_bid_at_place", "yes_ask_at_place", "filled_contracts",
             "avg_fill_price_cents", "fees_cents", "result", "reject_reason",
         ]]
@@ -276,6 +362,7 @@ with tab_today:
         st.write("Nothing today yet.")
 
 with tab_orders:
+    _page("All orders")
     rows = all_rows[:1000]  # same newest-first rows, no second database read
     if rows:
         df = pd.DataFrame(rows)
@@ -288,6 +375,7 @@ with tab_orders:
         st.write("No orders recorded yet.")
 
 with tab_days:
+    _page("By day")
     if live_days:
         st.subheader("Live days (real money)")
         st.caption("Percentages ignore size, so a $3 day and a $5 day compare fairly. "
@@ -344,12 +432,13 @@ with tab_days:
                      hide_index=True)
 
 with tab_depth:
+    _page("Depth")
     st.caption(f"{store.depth_row_count():,} snapshots stored. "
                f"Last sweep {clock.fmt(depth_mod.STATE['last_run'])}.")
     today_rows = store.orders_for_day(clock.today_ct())
     tickers = sorted({r["market_ticker"] for r in today_rows})
     if tickers:
-        pick = st.selectbox("Market", tickers)
+        pick = st.selectbox("Market", tickers, format_func=_nm)
         series = store.depth_for_market(clock.today_ct(), pick)
         if series:
             df = pd.DataFrame(series).set_index("ts")
@@ -362,7 +451,10 @@ with tab_depth:
         st.write("No markets tracked today yet.")
 
 with tab_log:
+    _page("Activity")
     entries = store.recent_activity()
     if entries:
         st.dataframe(pd.DataFrame(entries), use_container_width=True,
                      hide_index=True)
+
+mdkit.done()

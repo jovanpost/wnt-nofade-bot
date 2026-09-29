@@ -385,12 +385,10 @@ class Runner:
             return "rejected", f"{title} (rejected)"
 
         row["order_id"] = resp.get("order_id")
+        # The instant fill is NOT recorded from Kalshi's order reply: the same fill comes back
+        # from /portfolio/fills (at the NO price) and poll_fills() counts it there. Counting it
+        # here too doubled it at the YES price (found on nolive 2026-09-28).
         filled_now = bool(resp.get("fill_count"))
-        if filled_now:
-            row["status"] = "filled"
-            row["filled_contracts"] = resp["fill_count"]
-            row["first_fill_at"] = datetime.now(timezone.utc)
-            row["avg_fill_price_cents"] = resp.get("avg_fill_price_cents")
         store.record_order(**row)
         if take_now or filled_now:
             return "taken", f"{title} (bought immediately)"
@@ -448,12 +446,10 @@ class Runner:
             )
             return " [smoke REJECTED]"
         row["order_id"] = resp.get("order_id")
+        # The instant fill is NOT recorded from Kalshi's order reply: the same fill comes back
+        # from /portfolio/fills (at the NO price) and poll_fills() counts it there. Counting it
+        # here too doubled it at the YES price (found on nolive 2026-09-28).
         filled_now = bool(resp.get("fill_count"))
-        if filled_now:
-            row["status"] = "filled"
-            row["filled_contracts"] = resp["fill_count"]
-            row["first_fill_at"] = datetime.now(timezone.utc)
-            row["avg_fill_price_cents"] = resp.get("avg_fill_price_cents")
         store.record_order(**row)
         if filled_now:
             return " [smoke LIVE TAKEN]"
@@ -554,19 +550,30 @@ class Runner:
                 continue
 
             order = known[ticker]
-            already = float(order.get("filled_contracts") or 0)
-            total = already + count
-            prev_px = float(order.get("avg_fill_price_cents") or price)
-            avg_px = ((already * prev_px) + (count * price)) / total if total else price
+            if order.get("order_id") and fill.get("order_id") and str(order["order_id"]) == str(fill["order_id"]):
+                # Re-compute from every saved fill of this Kalshi order: never add on top of the
+                # row, so nothing can be counted twice and a wrong row heals on the next fill.
+                tot = store.fill_totals(str(order["order_id"]))
+                total = tot["contracts"]
+                avg_px = tot["avg_cents"] if tot["avg_cents"] is not None else price
+                fees_total = tot["fees_cents"]
+                first_at = tot["first_at"] or order.get("first_fill_at")
+            else:
+                already = float(order.get("filled_contracts") or 0)
+                total = already + count
+                prev_px = float(order.get("avg_fill_price_cents") or price)
+                avg_px = ((already * prev_px) + (count * price)) / total if total else price
+                fees_total = (order.get("fees_cents") or 0) + fee
+                first_at = order.get("first_fill_at") or clock.parse_api_time(fill.get("created_time"))
             store.update_order(
                 order["client_order_id"],
-                status="filled" if total >= float(order.get("contracts") or C.CONTRACTS) else "resting",
+                status="filled" if total >= float(order.get("contracts") or C.CONTRACTS) - 1e-6 else "resting",
                 filled_contracts=total,
-                first_fill_at=order.get("first_fill_at")
-                or clock.parse_api_time(fill.get("created_time")),
+                first_fill_at=first_at,
                 avg_fill_price_cents=avg_px,
-                fees_cents=(order.get("fees_cents") or 0) + fee,
+                fees_cents=fees_total,
             )
+            order["fees_cents"] = fees_total
             known[ticker]["filled_contracts"] = total
             known[ticker]["avg_fill_price_cents"] = avg_px
             STATE["fills_today"] += 1
@@ -1436,12 +1443,10 @@ class Runner:
 
             row = self._fast_row(market, ctx, coid, title, take_now, post_only, snap, sent_at)
             row["order_id"] = resp.get("order_id")
+            # The instant fill is NOT recorded from Kalshi's order reply: the same fill comes back
+            # from /portfolio/fills (at the NO price) and poll_fills() counts it there. Counting it
+            # here too doubled it at the YES price (found on nolive 2026-09-28).
             filled_now = bool(resp.get("fill_count"))
-            if filled_now:
-                row["status"] = "filled"
-                row["filled_contracts"] = resp["fill_count"]
-                row["first_fill_at"] = datetime.now(timezone.utc)
-                row["avg_fill_price_cents"] = resp.get("avg_fill_price_cents")
             self._fast_record(row, ctx)
             with ctx["lock"]:
                 ctx["done"].add(ticker)

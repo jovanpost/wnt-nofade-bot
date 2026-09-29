@@ -263,6 +263,25 @@ def record_fill(fill_id: str, **fields: Any) -> bool:
     return True
 
 
+def fill_totals(order_id: str) -> dict:
+    """Sum of every saved fill for one Kalshi order_id: contracts, weighted NO price, fees."""
+    with engine().connect() as conn:
+        rows = conn.execute(select(fills.c.contracts, fills.c.price_cents, fills.c.fee_cents, fills.c.created_at)
+                            .where(fills.c.order_id == order_id)).all()
+    c = sum(float(r[0] or 0) for r in rows)
+    cost = sum(float(r[0] or 0) * float(r[1] or 0) for r in rows)
+    fees = sum(float(r[2] or 0) for r in rows)
+    firsts = [r[3] for r in rows if r[3] is not None]
+    return {"contracts": round(c, 4), "avg_cents": (cost / c) if c > 0 else None,
+            "fees_cents": fees, "first_at": min(firsts) if firsts else None}
+
+
+def all_fills(limit: int = 20000) -> list[dict]:
+    with engine().connect() as conn:
+        rows = conn.execute(select(fills).order_by(fills.c.created_at).limit(limit)).mappings().all()
+    return [dict(r) for r in rows]
+
+
 def set_state(key: str, value: Any) -> None:
     payload = json.dumps(value)
     with engine().begin() as conn:
