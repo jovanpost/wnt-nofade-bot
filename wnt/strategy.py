@@ -23,6 +23,7 @@ STATE: dict = {
     "fills_today": 0,
     "last_error": None,
     "cancelled_today": False,
+    "day": None,                 # v1.2.1: the CT day this state belongs to (see _tick)
     "last_settle": None,
 }
 
@@ -821,8 +822,12 @@ class Runner:
         STATE["last_poll"] = now
         self._maybe_settle()
 
-        if STATE["active_date"] and STATE["active_date"] != today:
-            STATE.update(active_event=None, active_date=None, orders_today=0,
+        # v1.2.1: a new day ALWAYS starts clean. Before, this reset only ran while active_date was
+        # still set, and the 5:29 cancel clears active_date -- so "cancelled_today" stayed True into
+        # the next day: that day's in-app cancel was skipped and the late-market sweep was off.
+        # Only a restart cleared it (Kalshi's expiry and the GitHub cancel still removed the orders).
+        if STATE.get("day") != today:
+            STATE.update(day=today, active_event=None, active_date=None, orders_today=0,
                          fills_today=0, cancelled_today=False)
 
         deadline = clock.cancel_deadline(today)

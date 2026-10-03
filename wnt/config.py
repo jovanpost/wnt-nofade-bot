@@ -44,7 +44,7 @@ DRY_RUN = _flag("DRY_RUN", False)
 USE_DEMO = _flag("USE_DEMO", False)
 SMOKE_LIVE = _flag("SMOKE_LIVE", False)
 SMOKE_CONTRACTS = max(1, int(_num("SMOKE_CONTRACTS", 1)))
-VERSION = "wnt-nofade-v1.2"
+VERSION = "wnt-nofade-v1.2.1"
 
 SERIES = _secret("SERIES", "KXWORLDNEWSMENTION")
 NO_PRICE_CENTS = int(_num("NO_PRICE_CENTS", 26))
