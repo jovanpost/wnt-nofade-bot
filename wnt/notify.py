@@ -9,7 +9,7 @@ from typing import Callable
 
 import requests
 
-from . import config as C
+from . import config as C, lease
 
 log = logging.getLogger("wnt.notify")
 
@@ -81,6 +81,9 @@ def _listen() -> None:
         pass
 
     while True:
+        if not lease.running():      # another place holds the worker lease: it answers the commands
+            time.sleep(5)
+            continue
         try:
             resp = requests.get(
                 API.format(token=C.TELEGRAM_TOKEN, method="getUpdates"),

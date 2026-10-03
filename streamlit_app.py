@@ -18,15 +18,13 @@ operations are designed not to care --
 from __future__ import annotations
 
 import logging
-import threading
 
 import pandas as pd
 import streamlit as st
 
 import mdkit
 
-from wnt import analytics, clock, config as C, depth as depth_mod, notify, store
-from wnt.kalshi import KalshiClient
+from wnt import analytics, clock, config as C, depth as depth_mod, runtime, store
 from wnt.strategy import STATE, Runner
 
 logging.basicConfig(
@@ -39,64 +37,11 @@ st.set_page_config(page_title="WNT No-Fade Bot", page_icon="📉", layout="wide"
 
 @st.cache_resource
 def boot():
-    """Start everything exactly once per app process."""
-    store.init_db()
-    client = KalshiClient()
-    runner = Runner(client)
-    collector = depth_mod.DepthCollector(client)
-
-    def cmd_status(_args):
-        return (
-            f"<pre>{notify.esc(C.summary())}</pre>\n"
-            f"running={STATE['running']} event={STATE['active_event']}\n"
-            f"orders_today={STATE['orders_today']} fills_today={STATE['fills_today']}\n"
-            f"last_poll={clock.fmt(STATE['last_poll'])}\n"
-            f"paused={store.is_paused()} depth_snapshots={depth_mod.STATE['snapshots']}\n"
-            f"storage={'postgres' if store.using_postgres() else 'SQLITE (not durable!)'}"
-        )
-
-    def cmd_today(_args):
-        return analytics.day_pnl_lines(clock.today_ct())
-
-    def cmd_pnl(_args):
-        day = _args[0] if _args else clock.today_ct()
-        return analytics.day_pnl_lines(day)
-
-    def cmd_cancelnow(_args):
-        result = runner.cancel_all(reason="manual /cancelnow")
-        return (f"Cancelled {result['cancelled']}, "
-                f"{result['remaining']} left, verified={result['verified']}")
-
-    def cmd_pause(_args):
-        store.set_state("paused", True)
-        return "⏸ Paused. No new orders will be placed. Resting orders are untouched — use /cancelnow for those."
-
-    def cmd_resume(_args):
-        store.set_state("paused", False)
-        return "▶️ Resumed."
-
-    def cmd_balance(_args):
-        try:
-            data = client.get_balance()
-            return f"Cash: ${(data.get('balance') or 0) / 100:.2f}"
-        except Exception as exc:
-            return f"Balance lookup failed: {exc}"
-
-    def cmd_stats(_args):
-        return analytics.format_report(analytics.summarise())
-
-    for name, fn in [
-        ("status", cmd_status), ("today", cmd_today), ("pnl", cmd_pnl),
-        ("cancelnow", cmd_cancelnow),
-        ("pause", cmd_pause), ("resume", cmd_resume), ("balance", cmd_balance),
-        ("stats", cmd_stats),
-    ]:
-        notify.register(name, fn)
-    notify.start_listener()
-
-    threading.Thread(target=runner.run_forever, daemon=True, name="strategy").start()
-    threading.Thread(target=collector.run_forever, daemon=True, name="depth").start()
-    return {"runner": runner, "collector": collector, "client": client}
+    """Once per app process. The loops start only if RUN_WORKERS is on AND this place holds the
+    worker lease (wnt/runtime.py); otherwise this page is a dashboard. The Telegram commands live
+    in wnt/runtime.py."""
+    runtime.start_workers(where="streamlit")
+    return runtime.services()
 
 
 # The keep-alive workflow hits ?ping=true; bail out cheaply.
@@ -110,6 +55,9 @@ runner: Runner = services["runner"]
 
 # ---------------------------------------------------------------------------
 st.title("📉 WNT No-Fade Bot")
+_lvl, _txt = runtime.banner()
+if _lvl != "ok":
+    {"info": st.info, "warning": st.warning, "error": st.error}[_lvl](_txt)
 
 if C.DRY_RUN:
     st.info("**DRY RUN** — the bot does everything except actually submit orders.")
